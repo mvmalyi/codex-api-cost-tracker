@@ -1,0 +1,64 @@
+[app]
+timezone = "Europe/London"
+monthly_budget_usd = "500.00"
+rolling_30d_budget_usd = "500.00"
+watch_interval_seconds = 5.0
+active_sessions_path = "~/.codex/sessions"
+archived_sessions_path = "~/.codex/archived_sessions"
+
+# Prices are USD per one million tokens. These are deliberately local and
+# static: update this file when your provider's rates change.
+# Long-context pricing is selected when a single request's input_tokens value
+# exceeds long_context_threshold_tokens.
+
+[models."gpt-5.6-sol"]
+long_context_threshold_tokens = 272000
+
+[models."gpt-5.6-sol".short]
+input = "5.00"
+cached_input = "0.50"
+cache_write_input = "6.25"
+output = "30.00"
+
+[models."gpt-5.6-sol".long]
+input = "10.00"
+cached_input = "1.00"
+cache_write_input = "12.50"
+output = "45.00"
+
+[models."gpt-5.6-terra"]
+long_context_threshold_tokens = 272000
+
+[models."gpt-5.6-terra".short]
+input = "2.50"
+cached_input = "0.25"
+cache_write_input = "3.125"
+output = "15.00"
+
+[models."gpt-5.6-terra".long]
+input = "5.00"
+cached_input = "0.50"
+cache_write_input = "6.25"
+output = "22.50"
+
+[models."gpt-5.6-luna"]
+long_context_threshold_tokens = 272000
+
+[models."gpt-5.6-luna".short]
+input = "1.00"
+cached_input = "0.10"
+cache_write_input = "1.25"
+output = "6.00"
+
+[models."gpt-5.6-luna".long]
+input = "2.00"
+cached_input = "0.20"
+cache_write_input = "2.50"
+output = "9.00"
+
+# Add aliases only when you know which billed model an internal label uses.
+# Example:
+# [aliases]
+# codex-auto-review = "gpt-5.6-terra"
+[aliases]
+
