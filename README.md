@@ -6,6 +6,8 @@ A local-only macOS CLI that estimates OpenAI API cost from Codex JSONL rollout f
 
 This tool is designed specifically for people who interact with OpenAI API using Codex through **managed, institutional, or enterprise proxy keys** (such as keys issued by universities or companies) with monthly or annual quotas but no direct access to the OpenAI API dashboard.
 
+![screenshot](screenshot.png)
+
 ## Setup
 
 ```bash
