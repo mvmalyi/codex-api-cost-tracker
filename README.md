@@ -38,6 +38,10 @@ uv sync --group dev --no-editable
 uv run --no-sync pytest
 ```
 
+## A note on Codex logs
+
+The CLI tool can parse archived chats but not the ones that have been completely deleted. For an accurate estimate, keep the chats from the current month on your local machine.
+
 ## Pricing and accounting
 
 Edit `pricing.toml` to change budgets, paths, prices or model aliases. Prices
