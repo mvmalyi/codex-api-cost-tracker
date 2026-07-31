@@ -30,35 +30,33 @@ output = "45.00"
 long_context_threshold_tokens = 272000
 
 [models."gpt-5.6-terra".short]
-input = "2.50"
-cached_input = "0.25"
-cache_write_input = "3.125"
-output = "15.00"
+input = "2.00"
+cached_input = "0.2"
+cache_write_input = "2.50"
+output = "12.00"
 
 [models."gpt-5.6-terra".long]
-input = "5.00"
-cached_input = "0.50"
-cache_write_input = "6.25"
-output = "22.50"
+input = "4.00"
+cached_input = "0.40"
+cache_write_input = "5.00"
+output = "18.00"
 
 [models."gpt-5.6-luna"]
 long_context_threshold_tokens = 272000
 
 [models."gpt-5.6-luna".short]
-input = "1.00"
-cached_input = "0.10"
-cache_write_input = "1.25"
-output = "6.00"
+input = "0.20"
+cached_input = "0.02"
+cache_write_input = "0.25"
+output = "1.20"
 
 [models."gpt-5.6-luna".long]
-input = "2.00"
-cached_input = "0.20"
-cache_write_input = "2.50"
-output = "9.00"
+input = "0.40"
+cached_input = "0.04"
+cache_write_input = "0.5"
+output = "1.80"
 
 # Add aliases only when you know which billed model an internal label uses.
 # Example:
-# [aliases]
-# codex-auto-review = "gpt-5.6-terra"
 [aliases]
-
+# codex-auto-review = "gpt-5.6-terra"
