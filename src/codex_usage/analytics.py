@@ -67,6 +67,8 @@ class UsageReport:
     parse_issue_count: int
     discovered_files: int
     duplicate_files: int
+    plain_files: int = 0
+    compressed_files: int = 0
 
     @property
     def partial_cost(self) -> bool:
@@ -193,4 +195,6 @@ def build_report(
         parse_issue_count=len(scan.issues),
         discovered_files=scan.discovered_files,
         duplicate_files=scan.duplicate_files,
+        plain_files=scan.plain_files,
+        compressed_files=scan.compressed_files,
     )

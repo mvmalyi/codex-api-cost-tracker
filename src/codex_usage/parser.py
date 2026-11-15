@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from compression.zstd import ZstdError, ZstdFile
+except ImportError:  # Python 3.11–3.13
+    from backports.zstd import ZstdError, ZstdFile
+
 from .config import Settings
 from .domain import (
     UNKNOWN_MODEL,
@@ -18,7 +23,7 @@ from .domain import (
 
 
 _SESSION_ID_RE = re.compile(
-    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$"
+    r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl(?:\.zst)?$"
 )
 
 
@@ -28,6 +33,8 @@ class ScanResult:
     issues: list[ParseIssue]
     discovered_files: int
     duplicate_files: int
+    plain_files: int = 0
+    compressed_files: int = 0
 
     @property
     def requests(self) -> list[UsageEvent]:
@@ -158,8 +165,18 @@ def _process_record(session: ParsedSession, record: object, line_number: int) ->
 
 def parse_session(path: Path, previous: ParsedSession | None = None) -> ParsedSession:
     stat = path.stat()
-    can_append = (
+    compressed = path.name.endswith(".jsonl.zst")
+    if (
         previous is not None
+        and previous.inode == stat.st_ino
+        and previous.file_size == stat.st_size
+        and previous.mtime_ns == stat.st_mtime_ns
+    ):
+        return previous
+
+    can_append = (
+        not compressed
+        and previous is not None
         and previous.inode == stat.st_ino
         and stat.st_size >= previous.byte_offset
     )
@@ -170,10 +187,9 @@ def parse_session(path: Path, previous: ParsedSession | None = None) -> ParsedSe
         session = ParsedSession(path=path, session_id=fallback_session_id(path))
         start_offset = 0
 
-    if can_append and stat.st_size == session.file_size and stat.st_mtime_ns == session.mtime_ns:
-        return session
-
-    with path.open("rb") as handle:
+    # Compressed files are streamed from the beginning when changed. Their
+    # decoded offsets cannot be compared with physical compressed file sizes.
+    with (ZstdFile(path, "rb") if compressed else path.open("rb")) as handle:
         handle.seek(start_offset)
         while True:
             line_start = handle.tell()
@@ -198,10 +214,10 @@ def parse_session(path: Path, previous: ParsedSession | None = None) -> ParsedSe
             session.line_number = next_line_number
             session.byte_offset = handle.tell()
 
-    latest = path.stat()
-    session.inode = latest.st_ino
-    session.file_size = latest.st_size
-    session.mtime_ns = latest.st_mtime_ns
+    # Keep the initial fingerprint so writes during reading trigger another scan.
+    session.inode = stat.st_ino
+    session.file_size = stat.st_size
+    session.mtime_ns = stat.st_mtime_ns
     return session
 
 
@@ -214,11 +230,10 @@ class SessionScanner:
 
     def discover(self) -> list[Path]:
         paths: set[Path] = set()
-        active, archived = self.settings.source_paths
-        if active.is_dir():
-            paths.update(active.rglob("*.jsonl"))
-        if archived.is_dir():
-            paths.update(archived.glob("*.jsonl"))
+        for source in self.settings.source_paths:
+            if source.is_dir():
+                paths.update(source.rglob("*.jsonl"))
+                paths.update(source.rglob("*.jsonl.zst"))
         return sorted(paths)
 
     def scan(self) -> ScanResult:
@@ -230,7 +245,7 @@ class SessionScanner:
         for path in paths:
             try:
                 session = parse_session(path, self._cache.get(path))
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, EOFError, ZstdError) as exc:
                 issues.append(ParseIssue(path, 0, f"Could not read file: {exc}"))
                 continue
             self._cache[path] = session
@@ -242,7 +257,9 @@ class SessionScanner:
         selected: list[ParsedSession] = []
         duplicates = 0
         for session_id, copies in by_id.items():
-            chosen = max(copies, key=lambda item: (item.file_size, item.mtime_ns))
+            # Compare decoded bytes so compression cannot make a fuller copy
+            # lose to an older plain file, or count both representations twice.
+            chosen = max(copies, key=lambda item: (item.byte_offset, item.mtime_ns))
             selected.append(chosen)
             for duplicate in copies:
                 if duplicate is chosen:
@@ -258,4 +275,6 @@ class SessionScanner:
             issues=issues,
             discovered_files=len(paths),
             duplicate_files=duplicates,
+            plain_files=sum(path.suffix == ".jsonl" for path in paths),
+            compressed_files=sum(path.suffix == ".zst" for path in paths),
         )

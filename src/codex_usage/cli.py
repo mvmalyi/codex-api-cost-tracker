@@ -77,6 +77,8 @@ def _report_dict(report: UsageReport) -> dict[str, Any]:
                 row.long_context_api_requests for row in report.models.values()
             ),
             "discovered_files": report.discovered_files,
+            "plain_files": report.plain_files,
+            "compressed_files": report.compressed_files,
             "duplicate_files": report.duplicate_files,
             "parse_issue_count": report.parse_issue_count,
         },
@@ -209,7 +211,11 @@ def doctor(ctx: typer.Context) -> None:
             str(path),
         )
     scan = SessionScanner(settings).scan()
-    checks.add_row("Rollout discovery", "[green]OK[/]", f"{scan.discovered_files} JSONL file(s)")
+    checks.add_row(
+        "Rollout discovery",
+        "[green]OK[/]",
+        f"{scan.discovered_files} file(s): {scan.plain_files} plain, {scan.compressed_files} compressed",
+    )
     if scan.duplicate_files:
         checks.add_row("Deduplication", "[yellow]WARNING[/]", f"{scan.duplicate_files} duplicate(s)")
     else:

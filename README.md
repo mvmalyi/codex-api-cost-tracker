@@ -42,6 +42,17 @@ uv run --no-sync pytest
 
 The CLI tool can parse archived chats but not the ones that have been completely deleted. For an accurate estimate, keep the chats from the current month on your local machine.
 
+Both plain `.jsonl` and Zstandard-compressed `.jsonl.zst` logs are read from
+the active and archived session directories, including subdirectories.
+Compression or moving a log to the archive preserves its usage. If plain and
+compressed copies coexist, the tracker counts one copy per session ID, choosing
+the one with the most decoded data rather than the largest compressed file.
+
+Watch mode reads plain logs incrementally and caches unchanged compressed logs.
+Run `codex-usage doctor` to see plain/compressed file counts and read errors,
+including damaged compressed logs. These file counts are also included in JSON
+report diagnostics.
+
 ## Pricing and accounting
 
 Edit `pricing.toml` to change budgets, paths, prices or model aliases. Prices

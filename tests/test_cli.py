@@ -5,6 +5,7 @@ import json
 from typer.testing import CliRunner
 
 from codex_usage.cli import app
+from codex_usage.parser import ZstdFile
 
 
 runner = CliRunner()
@@ -72,3 +73,32 @@ def test_report_json_exposes_prompts_per_model_without_request_fields(settings_f
     assert payload["models"]["model-a"]["prompts"] == 1
     assert payload["diagnostics"]["api_requests"] == 1
     assert not any("requests" in key for key in payload["models"]["model-a"])
+
+
+def test_json_and_doctor_show_compressed_discovery(settings_factory) -> None:
+    settings, config = settings_factory()
+    with ZstdFile(settings.archived_sessions_path / "empty.jsonl.zst", "wb") as handle:
+        handle.write(b"{}\n")
+    (settings.active_sessions_path / "empty.jsonl").write_text("{}\n")
+
+    result = runner.invoke(app, ["--config", str(config), "report", "--period", "all", "--json"])
+
+    assert result.exit_code == 0, result.output
+    diagnostics = json.loads(result.output)["diagnostics"]
+    assert diagnostics["discovered_files"] == 2
+    assert diagnostics["plain_files"] == 1
+    assert diagnostics["compressed_files"] == 1
+    doctor = runner.invoke(app, ["--config", str(config), "doctor"])
+    assert doctor.exit_code == 0, doctor.output
+    assert "1 plain, 1 compressed" in doctor.output
+
+
+def test_doctor_displays_compressed_read_errors(settings_factory) -> None:
+    settings, config = settings_factory()
+    (settings.active_sessions_path / "damaged.jsonl.zst").write_bytes(b"not Zstandard")
+
+    result = runner.invoke(app, ["--config", str(config), "doctor"])
+
+    assert result.exit_code == 0, result.output
+    assert "WARNING" in result.output
+    assert "Could not read file" in result.output
