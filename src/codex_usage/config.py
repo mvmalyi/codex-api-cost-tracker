@@ -16,6 +16,7 @@ class PriceBand:
     input: Decimal
     cached_input: Decimal
     cache_write_input: Decimal
+    cache_write_input_12h: Decimal
     output: Decimal
 
 
@@ -30,7 +31,6 @@ class ModelPrice:
 class Settings:
     timezone: ZoneInfo
     monthly_budget_usd: Decimal
-    rolling_30d_budget_usd: Decimal
     watch_interval_seconds: float
     active_sessions_path: Path
     archived_sessions_path: Path
@@ -56,6 +56,8 @@ def _decimal(value: object, field: str) -> Decimal:
         result = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ConfigError(f"{field} must be a decimal number") from exc
+    if not result.is_finite():
+        raise ConfigError(f"{field} must be finite")
     if result < 0:
         raise ConfigError(f"{field} cannot be negative")
     return result
@@ -64,11 +66,18 @@ def _decimal(value: object, field: str) -> Decimal:
 def _band(data: object, field: str) -> PriceBand:
     if not isinstance(data, dict):
         raise ConfigError(f"{field} must be a TOML table")
-    required = ("input", "cached_input", "cache_write_input", "output")
+    required = ("input", "cached_input", "cache_write_input", "cache_write_input_12h", "output")
     missing = [key for key in required if key not in data]
     if missing:
-        raise ConfigError(f"{field} is missing: {', '.join(missing)}")
-    return PriceBand(**{key: _decimal(data[key], f"{field}.{key}") for key in required})
+        raise ConfigError(
+            f"{field} is missing: {', '.join(missing)}. "
+            "Set cache_write_input to the 30-minute rate and cache_write_input_12h "
+            "to your provider's 12-hour rate (USD per million tokens)."
+        )
+    band = PriceBand(**{key: _decimal(data[key], f"{field}.{key}") for key in required})
+    if band.cache_write_input_12h < band.cache_write_input:
+        raise ConfigError(f"{field}.cache_write_input_12h cannot be below cache_write_input")
+    return band
 
 
 def load_settings(path: Path | str = Path("pricing.toml")) -> Settings:
@@ -125,9 +134,6 @@ def load_settings(path: Path | str = Path("pricing.toml")) -> Settings:
     return Settings(
         timezone=timezone,
         monthly_budget_usd=_decimal(app.get("monthly_budget_usd", "500"), "app.monthly_budget_usd"),
-        rolling_30d_budget_usd=_decimal(
-            app.get("rolling_30d_budget_usd", "500"), "app.rolling_30d_budget_usd"
-        ),
         watch_interval_seconds=interval,
         active_sessions_path=Path(str(app.get("active_sessions_path", "~/.codex/sessions"))).expanduser(),
         archived_sessions_path=Path(

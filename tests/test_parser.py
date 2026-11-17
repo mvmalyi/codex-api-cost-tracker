@@ -163,7 +163,10 @@ def test_compression_and_archiving_preserve_watch_and_restart_totals(settings_fa
 
     def totals(scanner):
         report = build_report(scanner.scan(), settings, Period.month, now)
-        return report.tokens, report.cost_usd, report.sessions, report.prompts, report.api_requests
+        return (
+            report.tokens, report.cost_usd, report.sessions, report.prompts,
+            report.api_requests, report.cost_upper_usd, report.cost_mean_usd,
+        )
 
     expected = totals(scanner)
     assert expected[0].input == 100

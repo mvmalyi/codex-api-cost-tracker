@@ -20,7 +20,6 @@ def settings_factory(tmp_path: Path):
             f'''[app]
 timezone = "Europe/London"
 monthly_budget_usd = "500"
-rolling_30d_budget_usd = "500"
 watch_interval_seconds = 1
 active_sessions_path = "{active}"
 archived_sessions_path = "{archived}"
@@ -31,17 +30,20 @@ long_context_threshold_tokens = 100
 input = "10"
 cached_input = "2"
 cache_write_input = "20"
+cache_write_input_12h = "40"
 output = "40"
 [models."model-a".long]
 input = "20"
 cached_input = "4"
 cache_write_input = "40"
+cache_write_input_12h = "80"
 output = "80"
 
 [models."model-b".short]
 input = "1"
 cached_input = "0.1"
 cache_write_input = "1.25"
+cache_write_input_12h = "2.50"
 output = "5"
 
 [aliases]

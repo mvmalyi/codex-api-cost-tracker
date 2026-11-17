@@ -1,29 +1,68 @@
 [app]
 timezone = "Europe/London"
 monthly_budget_usd = "500.00"
-rolling_30d_budget_usd = "500.00"
 watch_interval_seconds = 5.0
 active_sessions_path = "~/.codex/sessions"
 archived_sessions_path = "~/.codex/archived_sessions"
 
 # Prices are USD per one million tokens. These are deliberately local and
 # static: update this file when your provider's rates change.
+# cache_write_input is the default 30-minute rate; cache_write_input_12h
+# prices the upper scenario. Logs do not distinguish lifetimes.
+# Standard API prices checked on 17 November 2026:
+# https://developers.openai.com/api/docs/pricing
 # Long-context pricing is selected when a single request's input_tokens value
 # exceeds long_context_threshold_tokens.
+
+[models."gpt-6.2-sol"]
+long_context_threshold_tokens = 272000
+
+[models."gpt-6.2-sol".short]
+input = "2.00"
+cached_input = "0.10"
+cache_write_input = "2.50"
+cache_write_input_12h = "5.00"
+output = "10.00"
+
+[models."gpt-6.2-sol".long]
+input = "4.00"
+cached_input = "0.20"
+cache_write_input = "5.00"
+cache_write_input_12h = "10.00"
+output = "15.00"
+
+[models."gpt-6.2-astra"]
+long_context_threshold_tokens = 272000
+
+[models."gpt-6.2-astra".short]
+input = "8.00"
+cached_input = "0.40"
+cache_write_input = "10.00"
+cache_write_input_12h = "20.00"
+output = "40.00"
+
+[models."gpt-6.2-astra".long]
+input = "16.00"
+cached_input = "0.80"
+cache_write_input = "20.00"
+cache_write_input_12h = "40.00"
+output = "60.00"
 
 [models."gpt-6.1-sol"]
 long_context_threshold_tokens = 272000
 
 [models."gpt-6.1-sol".short]
 input = "2.00"
-cached_input = "0.2"
+cached_input = "0.10"
 cache_write_input = "2.50"
+cache_write_input_12h = "5.00"
 output = "10.00"
 
 [models."gpt-6.1-sol".long]
 input = "4.00"
-cached_input = "0.40"
+cached_input = "0.20"
 cache_write_input = "5.00"
+cache_write_input_12h = "10.00"
 output = "15.00"
 
 [models."gpt-6-sol"]
@@ -33,12 +72,14 @@ long_context_threshold_tokens = 272000
 input = "2.00"
 cached_input = "0.2"
 cache_write_input = "2.50"
+cache_write_input_12h = "5.00"
 output = "10.00"
 
 [models."gpt-6-sol".long]
 input = "4.00"
 cached_input = "0.40"
 cache_write_input = "5.00"
+cache_write_input_12h = "10.00"
 output = "15.00"
 
 [models."gpt-6-astra"]
@@ -48,12 +89,14 @@ long_context_threshold_tokens = 272000
 input = "10.00"
 cached_input = "1.00"
 cache_write_input = "12.50"
+cache_write_input_12h = "25.00"
 output = "50.00"
 
 [models."gpt-6-astra".long]
 input = "20.00"
 cached_input = "2.00"
 cache_write_input = "25.00"
+cache_write_input_12h = "50.00"
 output = "75.00"
 
 [models."gpt-6.1-terra"]
@@ -62,13 +105,15 @@ long_context_threshold_tokens = 272000
 [models."gpt-6.1-terra".short]
 input = "1.00"
 cached_input = "0.05"
-cache_write_input = "2.50"
+cache_write_input = "1.25"
+cache_write_input_12h = "2.50"
 output = "5.00"
 
 [models."gpt-6.1-terra".long]
 input = "2.00"
 cached_input = "0.10"
-cache_write_input = "5.00"
+cache_write_input = "2.50"
+cache_write_input_12h = "5.00"
 output = "7.50"
 
 [models."gpt-6-luna"]
@@ -78,12 +123,14 @@ long_context_threshold_tokens = 272000
 input = "0.10"
 cached_input = "0.01"
 cache_write_input = "0.125"
+cache_write_input_12h = "0.25"
 output = "0.50"
 
 [models."gpt-6-luna".long]
 input = "0.20"
 cached_input = "0.02"
 cache_write_input = "0.25"
+cache_write_input_12h = "0.50"
 output = "0.75"
 
 #===========GPT 5.6 Line =========== #
@@ -95,12 +142,14 @@ long_context_threshold_tokens = 272000
 input = "4.00"
 cached_input = "0.40"
 cache_write_input = "5.00"
+cache_write_input_12h = "10.00"
 output = "20.00"
 
 [models."gpt-5.6-sol".long]
 input = "8.00"
 cached_input = "0.80"
 cache_write_input = "10.00"
+cache_write_input_12h = "20.00"
 output = "30.00"
 
 [models."gpt-5.6-terra"]
@@ -110,12 +159,14 @@ long_context_threshold_tokens = 272000
 input = "2.00"
 cached_input = "0.2"
 cache_write_input = "2.50"
+cache_write_input_12h = "5.00"
 output = "12.00"
 
 [models."gpt-5.6-terra".long]
 input = "4.00"
 cached_input = "0.40"
 cache_write_input = "5.00"
+cache_write_input_12h = "10.00"
 output = "18.00"
 
 [models."gpt-5.6-luna"]
@@ -125,12 +176,14 @@ long_context_threshold_tokens = 272000
 input = "0.20"
 cached_input = "0.02"
 cache_write_input = "0.25"
+cache_write_input_12h = "0.50"
 output = "1.20"
 
 [models."gpt-5.6-luna".long]
 input = "0.40"
 cached_input = "0.04"
 cache_write_input = "0.5"
+cache_write_input_12h = "1.00"
 output = "1.80"
 
 # Add aliases only when you know which billed model an internal label uses.

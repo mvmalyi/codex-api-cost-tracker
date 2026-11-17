@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
 import json
 from pathlib import Path
 import time
@@ -10,13 +9,12 @@ from typing import Annotated, Any
 import typer
 from rich.console import Console
 from rich.live import Live
-from rich.panel import Panel
 from rich.table import Table
 
 from .analytics import Period, UsageReport, build_report
 from .config import ConfigError, Settings, load_settings
-from .parser import ScanResult, SessionScanner
-from .render import dashboard_renderable, format_money, report_renderable
+from .parser import SessionScanner
+from .render import dashboard_renderable, report_renderable
 
 
 app = typer.Typer(
@@ -48,6 +46,8 @@ def _report_dict(report: UsageReport) -> dict[str, Any]:
         "sessions": report.sessions,
         "prompts": report.prompts,
         "cost_usd": str(report.cost_usd),
+        "cost_upper_usd": str(report.cost_upper_usd),
+        "cost_mean_usd": str(report.cost_mean_usd),
         "budget_usd": str(report.budget_usd) if report.budget_usd is not None else None,
         "partial_cost": report.partial_cost,
         "unknown_models": sorted(report.unknown_models),
@@ -67,6 +67,8 @@ def _report_dict(report: UsageReport) -> dict[str, Any]:
                 "input_tokens": row.tokens.input,
                 "output_tokens": row.tokens.output,
                 "cost_usd": str(row.cost_usd),
+                "cost_upper_usd": str(row.cost_upper_usd),
+                "cost_mean_usd": str(row.cost_mean_usd),
                 "priced": row.priced,
             }
             for name, row in sorted(report.models.items())
@@ -85,15 +87,16 @@ def _report_dict(report: UsageReport) -> dict[str, Any]:
     }
 
 
-def _dashboard(settings: Settings, json_output: bool = False) -> None:
+def _dashboard(
+    settings: Settings, json_output: bool = False, *, show_parser_warnings: bool = False
+) -> None:
     scan = SessionScanner(settings).scan()
     now = _now()
     month = build_report(scan, settings, Period.month, now)
-    rolling = build_report(scan, settings, Period.rolling_30d, now)
     if json_output:
-        console.print_json(json.dumps({"month": _report_dict(month), "rolling_30d": _report_dict(rolling)}))
+        console.print_json(json.dumps({"month": _report_dict(month)}))
     else:
-        console.print(dashboard_renderable(month, rolling, scan))
+        console.print(dashboard_renderable(month, scan, show_parser_warnings=show_parser_warnings))
 
 
 @app.callback(invoke_without_command=True)
@@ -107,18 +110,23 @@ def main(
         bool,
         typer.Option("--json", help="Emit machine-readable JSON for the default dashboard."),
     ] = False,
+    show_parser_warnings: Annotated[
+        bool,
+        typer.Option("--show-parser-warnings", help="Show parser/deduplication warnings in normal output."),
+    ] = False,
 ) -> None:
-    """Show current-month and trailing-30-day usage when no command is given."""
+    """Show current-month default, upper-bound and mean cost estimates."""
     settings = _settings(config)
     ctx.obj = settings
+    ctx.meta["show_parser_warnings"] = show_parser_warnings
     if ctx.invoked_subcommand is None:
-        _dashboard(settings, json_output)
+        _dashboard(settings, json_output, show_parser_warnings=show_parser_warnings)
 
 
 @app.command()
 def report(
     ctx: typer.Context,
-    period: Annotated[Period, typer.Option(help="Reporting window: month, 30d or all.")] = Period.month,
+    period: Annotated[Period, typer.Option(help="Reporting window: month or all.")] = Period.month,
     model: Annotated[str | None, typer.Option(help="Only include one exact observed model name.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
@@ -129,7 +137,9 @@ def report(
     if json_output:
         console.print_json(json.dumps(_report_dict(result)))
     else:
-        console.print(report_renderable(result, scan))
+        console.print(
+            report_renderable(result, scan, show_parser_warnings=ctx.meta["show_parser_warnings"])
+        )
 
 
 @app.command()
@@ -149,8 +159,8 @@ def watch(
         now = _now()
         renderable = dashboard_renderable(
             build_report(scan, settings, Period.month, now),
-            build_report(scan, settings, Period.rolling_30d, now),
             scan,
+            show_parser_warnings=ctx.meta["show_parser_warnings"],
         )
         with Live(renderable, console=console, refresh_per_second=4, screen=False) as live:
             while True:
@@ -160,8 +170,8 @@ def watch(
                 live.update(
                     dashboard_renderable(
                         build_report(scan, settings, Period.month, now),
-                        build_report(scan, settings, Period.rolling_30d, now),
                         scan,
+                        show_parser_warnings=ctx.meta["show_parser_warnings"],
                     ),
                     refresh=True,
                 )

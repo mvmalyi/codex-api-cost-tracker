@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Iterable
@@ -16,7 +16,6 @@ MILLION = Decimal(1_000_000)
 
 class Period(str, Enum):
     month = "month"
-    rolling_30d = "30d"
     all = "all"
 
 
@@ -47,8 +46,13 @@ class ModelTotals:
     sessions: set[str] = field(default_factory=set)
     tokens: TokenTotals = field(default_factory=TokenTotals)
     cost_usd: Decimal = Decimal("0")
+    cost_upper_usd: Decimal = Decimal("0")
     priced: bool = True
     long_context_api_requests: int = 0
+
+    @property
+    def cost_mean_usd(self) -> Decimal:
+        return (self.cost_usd + self.cost_upper_usd) / 2
 
 
 @dataclass
@@ -61,6 +65,7 @@ class UsageReport:
     api_requests: int
     tokens: TokenTotals
     cost_usd: Decimal
+    cost_upper_usd: Decimal
     budget_usd: Decimal | None
     models: dict[str, ModelTotals]
     unknown_models: set[str]
@@ -74,21 +79,21 @@ class UsageReport:
     def partial_cost(self) -> bool:
         return bool(self.unknown_models)
 
+    @property
+    def cost_mean_usd(self) -> Decimal:
+        return (self.cost_usd + self.cost_upper_usd) / 2
+
 
 def period_start(period: Period, now: datetime, settings: Settings) -> datetime | None:
     local_now = now.astimezone(settings.timezone)
     if period == Period.month:
         return local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if period == Period.rolling_30d:
-        return now - timedelta(days=30)
     return None
 
 
 def period_budget(period: Period, settings: Settings) -> Decimal | None:
     if period == Period.month:
         return settings.monthly_budget_usd
-    if period == Period.rolling_30d:
-        return settings.rolling_30d_budget_usd
     return None
 
 
@@ -101,12 +106,16 @@ def _price_band(price: ModelPrice, usage: TokenUsage) -> tuple[PriceBand, bool]:
     return (price.long if is_long else price.short), is_long  # type: ignore[return-value]
 
 
-def request_cost(usage: TokenUsage, price: ModelPrice) -> tuple[Decimal, bool]:
+def request_cost(
+    usage: TokenUsage, price: ModelPrice, *, upper_bound: bool = False
+) -> tuple[Decimal, bool]:
+    """Price all recorded writes at 30 minutes (default) or 12 hours (upper)."""
     band, is_long = _price_band(price, usage)
+    write_price = band.cache_write_input_12h if upper_bound else band.cache_write_input
     cost = (
         Decimal(usage.uncached_input) * band.input
         + Decimal(usage.cached_input) * band.cached_input
-        + Decimal(usage.cache_write_input) * band.cache_write_input
+        + Decimal(usage.cache_write_input) * write_price
         + Decimal(usage.output) * band.output
     ) / MILLION
     return cost, is_long
@@ -150,6 +159,7 @@ def build_report(
     models: dict[str, ModelTotals] = {}
     unknown: set[str] = set()
     cost = Decimal("0")
+    cost_upper = Decimal("0")
 
     for request in requests:
         totals.add(request.tokens)
@@ -167,9 +177,12 @@ def build_report(
             unknown.add(request.model)
             continue
         item_cost, is_long = request_cost(request.tokens, price)
+        item_upper, _ = request_cost(request.tokens, price, upper_bound=True)
         row.cost_usd += item_cost
+        row.cost_upper_usd += item_upper
         row.long_context_api_requests += int(is_long)
         cost += item_cost
+        cost_upper += item_upper
 
     for prompt in prompts:
         resolved = settings.resolve_model(prompt.model)
@@ -189,6 +202,7 @@ def build_report(
         api_requests=len(requests),
         tokens=totals,
         cost_usd=cost,
+        cost_upper_usd=cost_upper,
         budget_usd=period_budget(period, settings),
         models=models,
         unknown_models=unknown,

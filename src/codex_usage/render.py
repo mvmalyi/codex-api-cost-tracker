@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 
-from rich.columns import Columns
-from rich.console import Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -44,31 +44,45 @@ def _progress_bar(ratio: Decimal, width: int = 28) -> Text:
     return bar
 
 
-def budget_panel(report: UsageReport, title: str) -> Panel:
-    if report.budget_usd is None:
-        return Panel(format_money(report.cost_usd), title=title, border_style="#ffb87e")
-    ratio = report.cost_usd / report.budget_usd if report.budget_usd else Decimal("0")
-    remaining = max(Decimal("0"), report.budget_usd - report.cost_usd)
+def budget_panel(report: UsageReport, title: str, cost: Decimal) -> Panel:
     text = Text()
-    qualifier = "at least " if report.partial_cost else ""
-    text.append(f"{qualifier}{format_money(report.cost_usd)}", style=budget_style(ratio))
-    text.append(f" / {format_money(report.budget_usd)}  ({ratio:.1%})\n")
-    text.append_text(_progress_bar(ratio))
-    text.append(f"\nRemaining: {format_money(remaining)}")
+    style = "#ffb87e"
+    if report.budget_usd is None:
+        text.append(format_money(cost), style=f"bold {style}")
+    else:
+        ratio = cost / report.budget_usd if report.budget_usd else Decimal("0")
+        remaining = max(Decimal("0"), report.budget_usd - cost)
+        style = budget_style(ratio)
+        text.append(format_money(cost), style=style)
+        text.append(f" / {format_money(report.budget_usd)}  ({ratio:.1%})\n")
+        text.append_text(_progress_bar(ratio))
+        text.append(f"\nRemaining: {format_money(remaining)}")
     if report.partial_cost:
-        text.append("  • partial estimate", style="bold yellow")
-    return Panel(text, title=title, border_style=budget_style(ratio), padding=(1, 2))
+        text.append("\nPartial estimate", style="bold yellow")
+    return Panel(text, title=title, border_style=style, padding=(1, 2))
 
 
-def metrics_panel(report: UsageReport) -> Panel:
-    table = Table.grid(expand=True)
-    table.add_column(justify="center")
-    table.add_column(justify="center")
-    table.add_row(
-        f"[bold]{report.sessions:,}[/]\n[dim]sessions[/]",
-        f"[bold]{report.prompts:,}[/]\n[dim]prompts[/]",
-    )
-    return Panel(table, title="Activity", border_style="blue")
+@dataclass(frozen=True)
+class ScenarioPanels:
+    report: UsageReport
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        panels = [
+            budget_panel(self.report, "Default — 30m writes", self.report.cost_usd),
+            budget_panel(self.report, "Upper bound — 12h writes", self.report.cost_upper_usd),
+            budget_panel(self.report, "Mean — midpoint", self.report.cost_mean_usd),
+        ]
+        panel_width = max(console.measure(panel, options=options).maximum for panel in panels)
+        # The grid collapses its horizontal padding to one space between panels.
+        required_width = len(panels) * panel_width + len(panels) - 1
+        if options.max_width < required_width:
+            yield Group(*panels)
+        else:
+            table = Table.grid(expand=True, padding=(0, 1))
+            for _ in panels:
+                table.add_column(width=panel_width, ratio=1)
+            table.add_row(*panels)
+            yield table
 
 
 def token_table(report: UsageReport) -> Table:
@@ -94,72 +108,66 @@ def token_table(report: UsageReport) -> Table:
 
 def model_table(report: UsageReport) -> Table:
     table = Table(title="Models", expand=True, header_style="bold magenta")
-    table.add_column("Model")
-    table.add_column("Sessions", justify="right")
-    table.add_column("Prompts", justify="right")
-    table.add_column("Cost", justify="right")
+    table.add_column("Model", overflow="fold")
+    table.add_column("Sessions", justify="right", no_wrap=True)
+    table.add_column("Prompts", justify="right", no_wrap=True)
+    table.add_column("Default", justify="right", no_wrap=True)
+    table.add_column("Upper bound", justify="right", no_wrap=True)
+    table.add_column("Mean", justify="right", no_wrap=True)
     for model, row in sorted(report.models.items(), key=lambda item: item[1].cost_usd, reverse=True):
         label = model
         if row.resolved_model != model:
             label += f" → {row.resolved_model}"
-        cost = format_money(row.cost_usd) if row.priced else "[yellow]unpriced[/]"
+        costs = [
+            format_money(value) if row.priced else "[yellow]unpriced[/]"
+            for value in (row.cost_usd, row.cost_upper_usd, row.cost_mean_usd)
+        ]
         table.add_row(
             label,
             f"{len(row.sessions):,}",
             f"{row.prompts:,}",
-            cost,
+            *costs,
         )
     if not report.models:
-        table.add_row("[dim]No usage in this period[/]", "—", "—", "—")
+        table.add_row("[dim]No usage in this period[/]", "—", "—", "—", "—", "—")
     return table
 
 
-def warning_panel(report: UsageReport, scan: ScanResult) -> Panel | None:
+def warning_panel(
+    report: UsageReport, scan: ScanResult, *, show_parser_warnings: bool = False
+) -> Panel | None:
     lines: list[str] = []
     if report.unknown_models:
         lines.append("Unpriced models: " + ", ".join(sorted(report.unknown_models)))
-    if scan.issues:
+    if show_parser_warnings and scan.issues:
         lines.append(f"{len(scan.issues)} parser/deduplication warning(s); run [bold]codex-usage doctor[/].")
     if not lines:
         return None
     return Panel("\n".join(lines), title="Warnings", border_style="yellow")
 
 
-def report_renderable(report: UsageReport, scan: ScanResult) -> Group:
-    labels = {
-        "month": "Current calendar month",
-        "30d": "Trailing 30 days",
-        "all": "All recorded usage",
-    }
+def report_renderable(
+    report: UsageReport, scan: ScanResult, *, show_parser_warnings: bool = False
+) -> Group:
     pieces: list[RenderableType] = [
-        budget_panel(report, labels[report.period.value]),
-        metrics_panel(report),
+        ScenarioPanels(report),
         token_table(report),
         model_table(report),
     ]
-    warnings = warning_panel(report, scan)
+    if report.start is None:
+        pieces.insert(0, Text("All recorded usage", style="bold", justify="center"))
+    warnings = warning_panel(report, scan, show_parser_warnings=show_parser_warnings)
     if warnings:
         pieces.append(warnings)
     return Group(*pieces)
 
 
-def dashboard_renderable(month: UsageReport, rolling: UsageReport, scan: ScanResult) -> Group:
+def dashboard_renderable(
+    month: UsageReport, scan: ScanResult, *, show_parser_warnings: bool = False
+) -> Group:
     pieces: list[RenderableType] = [
-        Text("Codex Usage Tracker", style="bold", justify="center"),
-        Columns(
-            [
-                budget_panel(month, "Current calendar month"),
-                budget_panel(rolling, "Trailing 30 days"),
-            ],
-            equal=True,
-            expand=True,
-        ),
-        metrics_panel(month),
-        token_table(month),
-        model_table(month),
+        report_renderable(month, scan, show_parser_warnings=show_parser_warnings),
     ]
-    warnings = warning_panel(month, scan)
-    if warnings:
-        pieces.append(warnings)
-    pieces.append(Text(f"Updated {month.end.astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}", style="dim"))
+    updated = month.end.astimezone(month.start.tzinfo if month.start else None)
+    pieces.append(Text(f"Updated {updated.strftime('%Y-%m-%d %H:%M:%S %Z')}", style="dim"))
     return Group(*pieces)
