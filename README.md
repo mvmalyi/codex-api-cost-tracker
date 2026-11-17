@@ -99,7 +99,10 @@ cumulative `total_token_usage` field is intentionally ignored. Input is split
 into mutually exclusive uncached, cached and cache-write categories; reasoning
 tokens are already included in output tokens and are not charged again.
 
-The Models table counts `user_message` events as **Prompts**. Internal API
+The Models table counts user messages as **Prompts**, recognising both legacy
+`user_message` events and newer `response_item` message records without counting
+both copies twice. Injected instructions, goal continuation context and automated
+subagent messages are excluded. Internal API
 requests are intentionally hidden from the normal interface because agentic
 workflows can make several model calls for one prompt; they remain available as
 `diagnostics.api_requests` in JSON output and continue to drive token costs.

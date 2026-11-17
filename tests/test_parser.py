@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from codex_usage.analytics import Period, build_report
-from codex_usage.parser import SessionScanner, ZstdFile, parse_session
+from codex_usage.parser import ScanResult, SessionScanner, ZstdFile, parse_session
 
 
 SESSION_ID = "019fae69-69fc-7d51-b371-a2e868407c3b"
@@ -60,6 +60,137 @@ def test_parser_uses_last_usage_and_tracks_model_changes(tmp_path: Path) -> None
     assert session.requests[0].tokens.uncached_input == 10
     assert len(session.prompts) == 1
     assert session.prompts[0].model == "model-a"
+
+
+def user_record(timestamp="2026-07-29T00:00:02Z", *, text="Please investigate", metadata=None):
+    payload = {
+        "type": "message", "role": "user",
+        "content": [{"type": "input_text", "text": text}],
+    }
+    if metadata is not None:
+        payload["internal_chat_message_metadata_passthrough"] = metadata
+    return record(timestamp, "response_item", payload)
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_response_item_prompts_are_counted_and_reported_by_model(tmp_path, settings_factory, compressed):
+    settings, _ = settings_factory()
+    path = tmp_path / ("session.jsonl.zst" if compressed else "session.jsonl")
+    data = ("\n".join([
+        record("2026-07-29T00:00:01Z", "turn_context", {"model": "model-a"}),
+        user_record(metadata={"content_item_kinds": ["user.text", "user.image"]}),
+        token_record("2026-07-29T00:00:03Z"),
+        record("2026-07-29T00:00:04Z", "turn_context", {"model": "model-b"}),
+        user_record("2026-07-29T00:00:05Z"),
+    ]) + "\n").encode()
+    if compressed:
+        write_compressed(path, data)
+    else:
+        path.write_bytes(data)
+    session = parse_session(path)
+    assert [prompt.model for prompt in session.prompts] == ["model-a", "model-b"]
+    scan = ScanResult([session], [], 1, 0)
+    report = build_report(scan, settings, Period.month, datetime(2026, 7, 30, tzinfo=timezone.utc))
+    assert report.prompts == 2
+    assert report.models["model-a"].prompts == report.models["model-b"].prompts == 1
+    assert report.api_requests == 1
+
+
+@pytest.mark.parametrize("metadata,text", [
+    ({"content_item_kinds": ["agents_md.instructions", "environments.environment_context"]}, "context"),
+    ({"content_item_kinds": ["goal.internal_context"]}, "context"),
+    ({"content_item_kinds": ["user.goal"]}, "repeated goal"),
+    ({"content_item_metadata": [{"provenance": {"type": "harness"}}]}, "context"),
+    (None, "# AGENTS.md instructions\n<INSTRUCTIONS>Be helpful</INSTRUCTIONS>"),
+    (None, "<environment_context>context</environment_context>"),
+    (None, '<codex_internal_context source="goal">Continue</codex_internal_context>'),
+    (None, "<turn_aborted>Interrupted</turn_aborted>"),
+])
+def test_injected_user_role_context_is_not_a_prompt(tmp_path, metadata, text):
+    path = tmp_path / "session.jsonl"
+    path.write_text(user_record(metadata=metadata, text=text) + "\n")
+    assert parse_session(path).prompts == []
+
+
+@pytest.mark.parametrize("source", [
+    {"subagent": {"other": "guardian"}},
+    {"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}},
+])
+def test_automated_subagent_messages_are_not_human_prompts(tmp_path, source):
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join([
+        record("2026-07-29T00:00:00Z", "session_meta", {"id": SESSION_ID, "source": source}),
+        user_record(metadata={"content_item_kinds": ["user.text"]}),
+        token_record("2026-07-29T00:00:03Z"),
+    ]) + "\n")
+    session = parse_session(path)
+    assert session.prompts == []
+    assert len(session.requests) == 1
+
+
+def test_automated_review_turns_are_excluded_without_affecting_later_user_turns(tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join([
+        record("2026-07-29T00:00:00Z", "event_msg", {
+            "type": "task_started", "turn_id": "review",
+            "turn_attribution": {"turn_trigger": "guardian_review"},
+        }),
+        user_record(),
+        record("2026-07-29T00:00:03Z", "event_msg", {
+            "type": "task_started", "turn_id": "human",
+            "turn_attribution": {"turn_trigger": "composer"},
+        }),
+        user_record("2026-07-29T00:00:04Z", metadata={"turn_id": "human", "content_item_kinds": ["user.text"]}),
+        record("2026-07-29T00:00:05Z", "turn_context", {"turn_id": "human", "model": "model-b"}),
+    ]) + "\n")
+    assert [prompt.model for prompt in parse_session(path).prompts] == ["model-b"]
+
+
+@pytest.mark.parametrize("first_source", ["event_msg", "response_item"])
+def test_both_prompt_formats_are_deduplicated_across_incremental_scans(tmp_path, first_source):
+    path = tmp_path / "session.jsonl"
+    legacy = record("2026-07-29T00:00:02Z", "event_msg", {"type": "user_message", "turn_id": "turn-1"})
+    modern = user_record(metadata={"turn_id": "turn-1", "content_item_kinds": ["user.text"]})
+    first, second = (legacy, modern) if first_source == "event_msg" else (modern, legacy)
+    path.write_text(record("2026-07-29T00:00:01Z", "turn_context", {"turn_id": "turn-1", "model": "model-a"}) + "\n" + first + "\n")
+    session = parse_session(path)
+    assert len(session.prompts) == 1
+    with path.open("a") as handle:
+        handle.write(second + "\n" + first + "\n" + second + "\n")
+    session = parse_session(path, session)
+    assert len(session.prompts) == 2  # Two real messages, each represented twice.
+    assert len(parse_session(path).prompts) == 2
+
+
+def test_prompt_before_context_uses_that_turns_model(tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text("\n".join([
+        record("2026-07-29T00:00:01Z", "turn_context", {"turn_id": "old", "model": "model-a"}),
+        user_record(metadata={"turn_id": "new", "content_item_kinds": ["user.text"]}),
+        record("2026-07-29T00:00:03Z", "turn_context", {"turn_id": "new", "model": "model-b"}),
+    ]) + "\n")
+    assert [prompt.model for prompt in parse_session(path).prompts] == ["model-b"]
+
+
+@pytest.mark.parametrize("task_started", [False, True])
+def test_prompt_formats_around_context_without_turn_ids_are_deduplicated(tmp_path, task_started):
+    path = tmp_path / "session.jsonl"
+    lines = [record("2026-07-29T00:00:00Z", "event_msg", {"type": "task_started"})] if task_started else []
+    lines.extend([
+        user_record(),
+        record("2026-07-29T00:00:03Z", "turn_context", {"model": "model-a"}),
+        record("2026-07-29T00:00:04Z", "event_msg", {"type": "user_message"}),
+    ])
+    path.write_text("\n".join(lines) + "\n")
+    assert [prompt.model for prompt in parse_session(path).prompts] == ["model-a"]
+
+
+def test_response_item_with_invalid_timestamp_is_reported(tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text(user_record("invalid") + "\n")
+    session = parse_session(path)
+    assert session.prompts == []
+    assert "invalid timestamp" in session.issues[0].message
 
 
 def test_incomplete_last_line_is_retried_incrementally(tmp_path: Path) -> None:

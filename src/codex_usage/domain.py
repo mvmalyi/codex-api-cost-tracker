@@ -61,3 +61,9 @@ class ParsedSession:
     inode: int = 0
     file_size: int = 0
     mtime_ns: int = 0
+    is_subagent: bool = False
+    automated_turn: bool = False
+    prompt_turn: str = "initial"
+    prompt_source_counts: dict[tuple[str, str], int] = field(default_factory=dict)
+    prompt_indexes: dict[str, list[int]] = field(default_factory=dict)
+    pending_prompt_indexes: list[int] = field(default_factory=list)

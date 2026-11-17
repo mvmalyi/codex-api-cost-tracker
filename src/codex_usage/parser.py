@@ -83,6 +83,63 @@ def _replace_session_id(session: ParsedSession, session_id: str) -> None:
     ]
 
 
+def _is_user_prompt(payload: dict) -> bool:
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    if isinstance(metadata, dict):
+        kinds = metadata.get("content_item_kinds")
+        if isinstance(kinds, list) and kinds:
+            return any(
+                kind in {"user.text", "user.image", "user.audio"}
+                for kind in kinds if isinstance(kind, str)
+            )
+        items = metadata.get("content_item_metadata")
+        if isinstance(items, list) and items:
+            return any(
+                isinstance(item, dict)
+                and isinstance(item.get("provenance"), dict)
+                and item["provenance"].get("type") == "user"
+                for item in items
+            )
+
+    # Older rollouts have no provenance metadata for injected context.
+    content = payload.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    text = "\n".join(
+        item["text"] for item in content
+        if isinstance(item, dict) and isinstance(item.get("text"), str)
+    ).lstrip()
+    return not text.startswith((
+        "# AGENTS.md instructions", "<environment_context>", "<permissions instructions>",
+        "<skills_instructions>", "<codex_internal_context", "<turn_aborted>",
+        "<subagent_notification>",
+    ))
+
+
+def _record_prompt(
+    session: ParsedSession, payload: dict, timestamp: datetime, source: str
+) -> None:
+    if session.is_subagent or session.automated_turn:
+        return
+    metadata = payload.get("internal_chat_message_metadata_passthrough")
+    turn_id = metadata.get("turn_id") if isinstance(metadata, dict) else payload.get("turn_id")
+    turn = f"turn:{turn_id}" if isinstance(turn_id, str) and turn_id else session.prompt_turn
+    key = (turn, source)
+    ordinal = session.prompt_source_counts.get(key, 0)
+    session.prompt_source_counts[key] = ordinal + 1
+    indexes = session.prompt_indexes.setdefault(turn, [])
+    # Some rollouts emit both representations of each user message. Pair them
+    # by their order within the turn, including across incremental watch scans.
+    if ordinal < len(indexes):
+        return
+    index = len(session.prompts)
+    indexes.append(index)
+    model = session.current_model if turn == session.prompt_turn else UNKNOWN_MODEL
+    session.prompts.append(PromptEvent(timestamp, session.session_id, model))
+    if model == UNKNOWN_MODEL and not turn_id:
+        session.pending_prompt_indexes.append(index)
+
+
 def _process_record(session: ParsedSession, record: object, line_number: int) -> None:
     if not isinstance(record, dict):
         session.issues.append(ParseIssue(session.path, line_number, "JSON value is not an object"))
@@ -93,26 +150,61 @@ def _process_record(session: ParsedSession, record: object, line_number: int) ->
         return
 
     if record_type == "session_meta":
+        source = payload.get("source")
+        session.is_subagent = isinstance(source, dict) and "subagent" in source
         session_id = payload.get("id")
         if isinstance(session_id, str) and session_id:
             _replace_session_id(session, session_id)
         return
 
+    if record_type == "event_msg" and payload.get("type") == "task_started":
+        attribution = payload.get("turn_attribution")
+        session.automated_turn = (
+            isinstance(attribution, dict) and attribution.get("turn_trigger") == "guardian_review"
+        )
+        turn_id = payload.get("turn_id")
+        session.prompt_turn = (
+            f"turn:{turn_id}" if isinstance(turn_id, str) and turn_id else f"task:{line_number}"
+        )
+        return
+
     if record_type == "turn_context":
+        turn_id = payload.get("turn_id")
+        previous_turn = session.prompt_turn
+        if isinstance(turn_id, str) and turn_id:
+            session.prompt_turn = f"turn:{turn_id}"
+        elif not previous_turn.startswith("task:"):
+            session.prompt_turn = f"context:{line_number}"
+        if previous_turn == "initial" and previous_turn in session.prompt_indexes:
+            # Older formats can put the user message before the first context.
+            session.prompt_indexes[session.prompt_turn] = session.prompt_indexes.pop(previous_turn)
+            for source in ("event_msg", "response_item"):
+                count = session.prompt_source_counts.pop((previous_turn, source), 0)
+                if count:
+                    session.prompt_source_counts[(session.prompt_turn, source)] = count
         model = payload.get("model")
         if isinstance(model, str) and model:
             session.current_model = model
             session.observed_models.add(model)
+            indexes = set(session.prompt_indexes.get(session.prompt_turn, []))
+            indexes.update(session.pending_prompt_indexes)
+            for index in indexes:
+                prompt = session.prompts[index]
+                session.prompts[index] = PromptEvent(prompt.timestamp, prompt.session_id, model)
+            session.pending_prompt_indexes.clear()
         return
 
     timestamp = parse_timestamp(record.get("timestamp"))
-    if record_type == "event_msg" and payload.get("type") == "user_message":
+    legacy_prompt = record_type == "event_msg" and payload.get("type") == "user_message"
+    response_prompt = (
+        record_type == "response_item" and payload.get("type") == "message"
+        and payload.get("role") == "user" and _is_user_prompt(payload)
+    )
+    if legacy_prompt or response_prompt:
         if timestamp is None:
             session.issues.append(ParseIssue(session.path, line_number, "User turn has an invalid timestamp"))
             return
-        session.prompts.append(
-            PromptEvent(timestamp=timestamp, session_id=session.session_id, model=session.current_model)
-        )
+        _record_prompt(session, payload, timestamp, "event_msg" if legacy_prompt else "response_item")
         return
 
     if record_type != "event_msg" or payload.get("type") != "token_count":
