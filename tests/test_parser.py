@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -48,7 +49,7 @@ def test_parser_uses_last_usage_and_tracks_model_changes(tmp_path: Path) -> None
         record("2026-07-29T00:00:02Z", "event_msg", {"type": "user_message"}),
         token_record("2026-07-29T00:00:03Z"),
         record("2026-07-29T00:00:04Z", "turn_context", {"model": "model-b"}),
-        token_record("2026-07-29T00:00:05Z"),
+        token_record("2026-07-29T00:00:05Z", model_total=1000099),
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -215,6 +216,64 @@ def test_incomplete_last_line_is_retried_incrementally(tmp_path: Path) -> None:
     assert second.requests[0].model == "model-a"
 
 
+def test_repeated_usage_snapshots_are_skipped_across_incremental_scans(tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text(token_record("2026-07-29T00:00:01Z") + "\n")
+    session = parse_session(path)
+    with path.open("a") as handle:
+        handle.write(token_record("2026-07-29T00:00:02Z") + "\n")
+        reset = json.loads(token_record("2026-07-29T00:00:02.500Z"))
+        reset["payload"]["info"]["last_token_usage"] = {}
+        handle.write(json.dumps(reset) + "\n")  # Compaction resets last usage, not cumulative usage.
+        handle.write(token_record("2026-07-29T00:00:03Z", model_total=1000099) + "\n")
+    session = parse_session(path, session)
+    assert len(session.requests) == 2
+    assert sum(request.tokens.input for request in session.requests) == 200
+    assert parse_session(path).requests == session.requests
+
+
+@pytest.mark.parametrize("total_usage", [None, {}, {"input_tokens": "invalid"}])
+def test_usage_without_reliable_cumulative_counters_is_not_deduplicated(tmp_path, total_usage):
+    path = tmp_path / "session.jsonl"
+    data = json.loads(token_record("2026-07-29T00:00:01Z"))
+    data["payload"]["info"]["total_token_usage"] = total_usage
+    path.write_text((json.dumps(data) + "\n") * 2)
+    assert len(parse_session(path).requests) == 2
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_parent_and_subagent_costs_are_included_once_at_their_own_model_rates(settings_factory, compressed):
+    settings, _ = settings_factory()
+    for session_id, model, source in [
+        ("parent", "model-a", "vscode"),
+        ("child", "model-b", {"subagent": {"thread_spawn": {"parent_thread_id": "parent"}}}),
+    ]:
+        path = settings.active_sessions_path / f"{session_id}.jsonl"
+        data = ("\n".join([
+            record("2026-07-29T00:00:00Z", "session_meta", {"id": session_id, "source": source}),
+            record("2026-07-29T00:00:01Z", "turn_context", {"model": model}),
+            user_record(),
+            token_record("2026-07-29T00:00:03Z"),
+            # A status update repeats the last usage, even after a context event.
+            record("2026-07-29T00:00:04Z", "turn_context", {"model": model}),
+            token_record("2026-07-29T00:00:05Z"),
+        ]) + "\n").encode()
+        if compressed:
+            write_compressed(path.with_suffix(".jsonl.zst"), data)
+        else:
+            path.write_bytes(data)
+    scan = SessionScanner(settings).scan()
+    report = build_report(scan, settings, Period.month, datetime(2026, 7, 30, tzinfo=timezone.utc))
+    assert report.api_requests == report.sessions == 2
+    assert report.tokens.input == 200
+    assert report.tokens.output == 40
+    assert report.prompts == 1
+    assert report.models["model-b"].prompts == 0
+    assert report.models["model-a"].api_requests == report.models["model-b"].api_requests == 1
+    assert report.cost_usd == Decimal("0.0017735")
+    assert report.cost_upper_usd == Decimal("0.002411")
+
+
 def test_malformed_complete_line_is_reported_and_skipped(tmp_path: Path) -> None:
     path = tmp_path / f"rollout-2026-07-29T00-00-00-{SESSION_ID}.jsonl"
     path.write_text("{not-json}\n" + token_record("2026-07-29T00:00:03Z") + "\n", encoding="utf-8")
@@ -248,7 +307,10 @@ def session_bytes(*, requests: int = 1) -> bytes:
         record("2026-07-29T00:00:01Z", "turn_context", {"model": "model-a"}),
         record("2026-07-29T00:00:02Z", "event_msg", {"type": "user_message"}),
     ]
-    lines.extend(token_record(f"2026-07-29T00:00:{index + 3:02d}Z") for index in range(requests))
+    lines.extend(
+        token_record(f"2026-07-29T00:00:{index + 3:02d}Z", model_total=999999 + index * 100)
+        for index in range(requests)
+    )
     return ("\n".join(lines) + "\n").encode()
 
 
@@ -391,6 +453,6 @@ def test_concatenated_zstandard_frames_are_read(tmp_path: Path) -> None:
     path = tmp_path / f"rollout-{SESSION_ID}.jsonl.zst"
     write_compressed(path, session_bytes())
     with ZstdFile(path, "ab") as handle:
-        handle.write((token_record("2026-07-29T00:00:04Z") + "\n").encode())
+        handle.write((token_record("2026-07-29T00:00:04Z", model_total=1000099) + "\n").encode())
 
     assert len(parse_session(path).requests) == 2

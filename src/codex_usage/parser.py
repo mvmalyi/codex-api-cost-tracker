@@ -236,6 +236,23 @@ def _process_record(session: ParsedSession, record: object, line_number: int) ->
         )
         return
     tokens = TokenUsage(**fields)  # type: ignore[arg-type]
+    total_usage = info.get("total_token_usage")
+    snapshot = None
+    if isinstance(total_usage, dict) and total_usage:
+        cumulative = [
+            _token_integer(total_usage, key)
+            for key in (
+                "input_tokens", "cached_input_tokens", "cache_write_input_tokens",
+                "output_tokens", "reasoning_output_tokens", "total_tokens",
+            )
+        ]
+        if all(value is not None for value in cumulative):
+            snapshot = tuple(value for value in cumulative if value is not None)
+    # Status updates can repeat the previous request's usage. Cumulative counts
+    # identify those snapshots; prices still use only last_token_usage.
+    if snapshot is not None and snapshot == session.last_cumulative_usage:
+        return
+    session.last_cumulative_usage = snapshot
     if tokens.cached_input + tokens.cache_write_input > tokens.input:
         session.issues.append(
             ParseIssue(session.path, line_number, "Cached plus cache-write input exceeds total input")

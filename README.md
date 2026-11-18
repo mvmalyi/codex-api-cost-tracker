@@ -94,8 +94,11 @@ activity and do not account for deleted logs or different proxy billing.
 All-time reports apply the configured static prices across recorded history;
 they do not reconstruct historical invoices or the availability of cache options.
 
-Each `token_count.info.last_token_usage` record is one model request. The
-cumulative `total_token_usage` field is intentionally ignored. Input is split
+Requests are priced from `token_count.info.last_token_usage`. Repeated status
+snapshots with unchanged cumulative usage are counted once;
+`total_token_usage` is used only to identify those repeats, never as a charge.
+Subagent requests are included at their own model's rates, alongside parent
+requests. Input is split
 into mutually exclusive uncached, cached and cache-write categories; reasoning
 tokens are already included in output tokens and are not charged again.
 

@@ -67,3 +67,4 @@ class ParsedSession:
     prompt_source_counts: dict[tuple[str, str], int] = field(default_factory=dict)
     prompt_indexes: dict[str, list[int]] = field(default_factory=dict)
     pending_prompt_indexes: list[int] = field(default_factory=list)
+    last_cumulative_usage: tuple[int, ...] | None = None
