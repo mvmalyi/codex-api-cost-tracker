@@ -17,15 +17,17 @@ codex-usage
 
 `uv tool install` keeps the installed CLI independent of the project folder. Re-run `uv tool install --force .` after changing the source code.
 
-The default dashboard shows three estimates for the current calendar month,
-each against `monthly_budget_usd` in `pricing.toml`:
+The default dashboard shows the current calendar month's main estimate against
+`monthly_budget_usd` in `pricing.toml`, with one budget progress bar:
 
-- **Default:** all cache writes priced at the 30-minute rate.
-- **Upper bound:** all cache writes priced at the 12-hour rate.
-- **Mean:** the arithmetic midpoint of those two estimates, not a predicted bill.
+- **Main estimate:** all cache writes priced at the 30-minute rate.
+- **Upper bound:** all cache writes priced at the 12-hour rate, shown as an amount inside the same panel.
+- **Midpoint:** the arithmetic midpoint of those two estimates, shown alongside the upper bound.
 
-The Models table shows the same three costs per model. Panels stay side by side
-while their contents fit, and stack vertically only when more space is needed.
+The midpoint is a comparison value, not a predicted bill. The progress bar fills
+the available width; the secondary amounts wrap onto separate rows when needed.
+The Models table shows the same three costs per model as Default, Upper bound
+and Mean. JSON fields and cost calculations are unchanged.
 
 Useful commands:
 

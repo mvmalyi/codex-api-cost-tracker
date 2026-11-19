@@ -173,7 +173,7 @@ def test_unpriced_model_warning_and_partial_scenarios_remain_visible(settings_fa
     result = runner.invoke(app, ["--config", str(config), "report", "--period", "all"])
     assert result.exit_code == 0, result.output
     assert "Unpriced models: mystery" in result.output
-    assert result.output.count("Partial estimate") == 3
+    assert result.output.count("Partial estimate") == 1
     assert "Remaining" not in result.output
 
 
@@ -220,9 +220,9 @@ def test_watch_renders_and_refreshes_scenarios_with_warning_preference(settings_
             stream = StringIO()
             Console(file=stream, width=160).print(snapshot)
             rendered = stream.getvalue()
-            assert "Default — 30m writes" in rendered
-            assert "Upper bound — 12h writes" in rendered
-            assert "Mean — midpoint" in rendered
+            assert "Main estimate — 30m writes" in rendered
+            assert "Upper bound (12h writes):" in rendered
+            assert "Midpoint:" in rendered
             assert "Activity" not in rendered
             assert "Trailing" not in rendered
             assert ("parser/deduplication" in rendered) is show_warnings

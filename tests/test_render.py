@@ -12,7 +12,7 @@ from rich.console import Console
 from codex_usage.analytics import ModelTotals, Period, TokenTotals, UsageReport
 from codex_usage.domain import ParseIssue
 from codex_usage.parser import ScanResult
-from codex_usage.render import ScenarioPanels, budget_panel, dashboard_renderable, model_table, token_table
+from codex_usage.render import budget_panel, dashboard_renderable, model_table, report_renderable, token_table
 
 
 def report_fixture() -> UsageReport:
@@ -91,9 +91,9 @@ def test_dashboard_layout_is_readable_at_different_widths(width, state) -> None:
     stream = StringIO()
     Console(file=stream, width=width).print(dashboard_renderable(report, scan))
     text = stream.getvalue()
-    assert "Default — 30m writes" in text
-    assert "Upper bound — 12h writes" in text
-    assert "Mean — midpoint" in text
+    assert "Main estimate — 30m writes" in text
+    assert "Upper bound (12h writes):" in text
+    assert "Midpoint:" in text
     assert "Codex Usage Tracker" not in text
     assert "Current calendar month" not in text
     assert "Mean is the midpoint" not in text
@@ -101,13 +101,10 @@ def test_dashboard_layout_is_readable_at_different_widths(width, state) -> None:
     assert "Trailing" not in text
     assert "parser/deduplication" not in text
     assert all(len(line) <= width for line in text.splitlines())
-    title_lines = [
-        i for i, line in enumerate(text.splitlines())
-        if any(title in line for title in ("Default —", "Upper bound —", "Mean —"))
-    ]
-    assert len(title_lines) == (3 if width < 104 else 1)
+    assert text.count("Main estimate —") == 1
+    assert sum("░" in line or "█" in line for line in text.splitlines()) == 1
     if state == "partial":
-        assert text.count("Partial estimate") == 3
+        assert text.count("Partial estimate") == 1
         assert "Unpriced models: mystery" in text
     elif state == "empty":
         assert "No usage" in text
@@ -115,49 +112,76 @@ def test_dashboard_layout_is_readable_at_different_widths(width, state) -> None:
         assert "$1.23" in text and "$2.47" in text and "$1.85" in text
 
 
-def test_each_budget_panel_uses_its_own_cost_and_clamps_remaining() -> None:
+def test_budget_panel_uses_main_cost_for_budget_and_secondary_costs_as_amounts() -> None:
     report = report_fixture()
     report.budget_usd = Decimal("2")
     stream = StringIO()
     console = Console(file=stream, width=80)
-    console.print(budget_panel(report, "Default", report.cost_usd))
-    console.print(budget_panel(report, "Upper", report.cost_upper_usd))
-    console.print(budget_panel(report, "Mean", report.cost_mean_usd))
+    console.print(budget_panel(report))
     text = stream.getvalue()
-    assert "61.5%" in text and "123.5%" in text and "92.5%" in text
-    assert "Remaining: $0.77" in text and "Remaining: $0.00" in text and "Remaining: $0.15" in text
+    assert "$1.23 / $2.00  (61.5%)" in text
+    assert "Remaining: $0.77" in text
+    assert "Upper bound (12h writes): $2.47" in text and "Midpoint: $1.85" in text
+    assert text.count("%") == text.count("Remaining:") == 1
+
+
+def test_main_estimate_over_budget_clamps_remaining_and_progress() -> None:
+    report = report_fixture()
+    report.budget_usd = Decimal("1")
+    stream = StringIO()
+    Console(file=stream, width=80).print(budget_panel(report))
+    text = stream.getvalue()
+    assert "123.0%" in text
+    assert "Remaining: $0.00" in text
+    assert "░" not in text
 
 
 def test_zero_budget_has_no_division_error() -> None:
     report = report_fixture()
     report.budget_usd = Decimal("0")
     stream = StringIO()
-    Console(file=stream, width=80).print(budget_panel(report, "Default", report.cost_usd))
+    Console(file=stream, width=80).print(budget_panel(report))
     assert "Remaining: $0.00" in stream.getvalue()
 
 
-@pytest.mark.parametrize("width,title_rows,panel_rows", [(103, 3, 21), (104, 1, 7), (125, 1, 7)])
-def test_scenario_panels_only_stack_when_contents_no_longer_fit(width, title_rows, panel_rows) -> None:
+@pytest.mark.parametrize("width", [40, 60, 80, 103, 104, 125, 160])
+def test_single_budget_panel_keeps_one_bar_and_complete_amounts_at_different_widths(width) -> None:
     stream = StringIO()
-    Console(file=stream, width=width).print(ScenarioPanels(report_fixture()))
+    Console(file=stream, width=width).print(budget_panel(report_fixture()))
     lines = stream.getvalue().splitlines()
-    assert sum("╭" in line for line in lines) == title_rows
-    assert len(lines) == panel_rows
+    assert sum("╭" in line for line in lines) == 1
+    bar_lines = [line for line in lines if "░" in line or "█" in line]
+    assert len(bar_lines) == 1
+    assert bar_lines[0].count("█") + bar_lines[0].count("░") == width - 6
+    assert "Upper bound (12h writes): $2.47" in stream.getvalue()
+    assert "Midpoint: $1.85" in stream.getvalue()
     assert all(len(line) <= width for line in lines)
 
 
-@pytest.mark.parametrize("width,title_rows,panel_rows", [(125, 3, 21), (160, 1, 7)])
-def test_large_amounts_require_more_room_without_wrapping(width, title_rows, panel_rows) -> None:
+@pytest.mark.parametrize("width", [80, 125, 160])
+def test_large_amounts_fit_in_the_single_panel_without_wrapping(width) -> None:
     report = report_fixture()
     report.budget_usd = Decimal("1000000000")
     report.cost_usd = Decimal("500000000")
     report.cost_upper_usd = Decimal("900000000")
     stream = StringIO()
-    Console(file=stream, width=width).print(ScenarioPanels(report))
+    Console(file=stream, width=width).print(budget_panel(report))
     text = stream.getvalue()
     lines = text.splitlines()
-    assert sum("╭" in line for line in lines) == title_rows
-    assert len(lines) == panel_rows
+    assert sum("╭" in line for line in lines) == 1
     assert all(len(line) <= width for line in lines)
-    for cost in ("$500,000,000.00", "$900,000,000.00", "$700,000,000.00"):
-        assert f"{cost} / $1,000,000,000.00" in text
+    assert "$500,000,000.00 / $1,000,000,000.00" in text
+    assert "Upper bound (12h writes): $900,000,000.00" in text
+    assert "Midpoint: $700,000,000.00" in text
+
+
+def test_all_time_report_keeps_secondary_amounts_without_a_budget_bar() -> None:
+    report = report_fixture()
+    report.start = None
+    report.budget_usd = None
+    stream = StringIO()
+    Console(file=stream, width=80).print(report_renderable(report, ScanResult([], [], 0, 0)))
+    text = stream.getvalue()
+    assert "All recorded usage" in text
+    assert "Upper bound (12h writes): $2.47" in text and "Midpoint: $1.85" in text
+    assert "Remaining:" not in text and "░" not in text and "█" not in text

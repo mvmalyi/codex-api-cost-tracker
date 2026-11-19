@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from rich.columns import Columns
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.panel import Panel
 from rich.table import Table
@@ -44,45 +45,39 @@ def _progress_bar(ratio: Decimal, width: int = 28) -> Text:
     return bar
 
 
-def budget_panel(report: UsageReport, title: str, cost: Decimal) -> Panel:
-    text = Text()
-    style = "#ffb87e"
-    if report.budget_usd is None:
-        text.append(format_money(cost), style=f"bold {style}")
-    else:
-        ratio = cost / report.budget_usd if report.budget_usd else Decimal("0")
-        remaining = max(Decimal("0"), report.budget_usd - cost)
-        style = budget_style(ratio)
-        text.append(format_money(cost), style=style)
-        text.append(f" / {format_money(report.budget_usd)}  ({ratio:.1%})\n")
-        text.append_text(_progress_bar(ratio))
-        text.append(f"\nRemaining: {format_money(remaining)}")
-    if report.partial_cost:
-        text.append("\nPartial estimate", style="bold yellow")
-    return Panel(text, title=title, border_style=style, padding=(1, 2))
-
-
 @dataclass(frozen=True)
-class ScenarioPanels:
-    report: UsageReport
+class _BudgetProgressBar:
+    ratio: Decimal
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        panels = [
-            budget_panel(self.report, "Default — 30m writes", self.report.cost_usd),
-            budget_panel(self.report, "Upper bound — 12h writes", self.report.cost_upper_usd),
-            budget_panel(self.report, "Mean — midpoint", self.report.cost_mean_usd),
-        ]
-        panel_width = max(console.measure(panel, options=options).maximum for panel in panels)
-        # The grid collapses its horizontal padding to one space between panels.
-        required_width = len(panels) * panel_width + len(panels) - 1
-        if options.max_width < required_width:
-            yield Group(*panels)
-        else:
-            table = Table.grid(expand=True, padding=(0, 1))
-            for _ in panels:
-                table.add_column(width=panel_width, ratio=1)
-            table.add_row(*panels)
-            yield table
+        yield _progress_bar(self.ratio, width=options.max_width)
+
+
+def budget_panel(report: UsageReport) -> Panel:
+    text = Text()
+    pieces: list[RenderableType] = [text]
+    style = "#ffb87e"
+    if report.budget_usd is None:
+        text.append(format_money(report.cost_usd), style=f"bold {style}")
+    else:
+        ratio = report.cost_usd / report.budget_usd if report.budget_usd else Decimal("0")
+        remaining = max(Decimal("0"), report.budget_usd - report.cost_usd)
+        style = budget_style(ratio)
+        text.append(format_money(report.cost_usd), style=f"bold {style}")
+        text.append(f" / {format_money(report.budget_usd)}  ({ratio:.1%})")
+        pieces.extend([
+            _BudgetProgressBar(ratio),
+            Text(f"Remaining: {format_money(remaining)}"),
+        ])
+    pieces.append(Columns([
+        Text.assemble(("Upper bound (12h writes): ", "dim"), format_money(report.cost_upper_usd)),
+        Text.assemble(("Midpoint: ", "dim"), format_money(report.cost_mean_usd)),
+    ], padding=(0, 3)))
+    if report.partial_cost:
+        pieces.append(Text("Partial estimate", style="bold yellow"))
+    return Panel(
+        Group(*pieces), title="Main estimate — 30m writes", border_style=style, padding=(1, 2)
+    )
 
 
 def token_table(report: UsageReport) -> Table:
@@ -107,7 +102,7 @@ def token_table(report: UsageReport) -> Table:
 
 
 def model_table(report: UsageReport) -> Table:
-    table = Table(title="Models", expand=True, header_style="bold magenta")
+    table = Table(title="Models", expand=True, header_style="bold #d2a8ff")
     table.add_column("Model", overflow="fold")
     table.add_column("Sessions", justify="right", no_wrap=True)
     table.add_column("Prompts", justify="right", no_wrap=True)
@@ -150,7 +145,7 @@ def report_renderable(
     report: UsageReport, scan: ScanResult, *, show_parser_warnings: bool = False
 ) -> Group:
     pieces: list[RenderableType] = [
-        ScenarioPanels(report),
+        budget_panel(report),
         token_table(report),
         model_table(report),
     ]
