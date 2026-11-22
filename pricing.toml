@@ -1,9 +1,26 @@
 [app]
-timezone = "Europe/London"
+timezone = "local" # Or an IANA timezone such as "Europe/London".
 monthly_budget_usd = "500.00"
 watch_interval_seconds = 5.0
 active_sessions_path = "~/.codex/sessions"
 archived_sessions_path = "~/.codex/archived_sessions"
+show_cost_range = false
+
+# Optional provider-reported usage. Disabled unless explicitly configured.
+# Response field names accept dotted paths (for example "data.usage").
+[cost_endpoint]
+enabled = false
+# url = "https://your-provider.example/api/v1/costs"
+# api_key_env = "PROVIDER_API_KEY"
+# usage_field = "usage"
+# limit_field = "limit"       # Falls back to monthly_budget_usd when absent.
+# as_of_field = "asOf"        # Shown in app.timezone; may lag behind local usage.
+# currency_field = "currency"
+# currency_override = "USD"  # Only for a wrongly labelled response; no conversion.
+# timeout_seconds = 30
+# refresh_interval_seconds = 60
+# [cost_endpoint.params]
+# account = "example"        # Optional GET query parameters; never put keys here.
 
 # Prices are USD per one million tokens. These are deliberately local and
 # static: update this file when your provider's rates change.

@@ -21,8 +21,9 @@ def test_default_dashboard_and_doctor(settings_factory) -> None:
     assert "Codex Usage Tracker" not in result.output
     assert "Current calendar month" not in result.output
     assert "Mean is the midpoint" not in result.output
-    assert "Upper bound" in result.output
-    assert "Mean" in result.output
+    assert "Upper bound" not in result.output
+    assert "Midpoint" not in result.output
+    assert "Mean" not in result.output
     assert "Activity" not in result.output
     assert "Trailing" not in result.output
     assert "Prompts" in result.output
@@ -221,8 +222,103 @@ def test_watch_renders_and_refreshes_scenarios_with_warning_preference(settings_
             Console(file=stream, width=160).print(snapshot)
             rendered = stream.getvalue()
             assert "Main estimate — 30m writes" in rendered
-            assert "Upper bound (12h writes):" in rendered
-            assert "Midpoint:" in rendered
+            assert "Upper bound" not in rendered
+            assert "Midpoint:" not in rendered
             assert "Activity" not in rendered
             assert "Trailing" not in rendered
             assert ("parser/deduplication" in rendered) is show_warnings
+
+
+def test_cost_range_is_opt_in_and_can_override_config(settings_factory) -> None:
+    _, config = settings_factory()
+    result = runner.invoke(app, ["--config", str(config), "--show-cost-range"])
+    assert result.exit_code == 0, result.output
+    assert "Upper bound (12h writes):" in result.output and "Midpoint:" in result.output
+    config.write_text(config.read_text().replace('[app]', '[app]\nshow_cost_range = true'))
+    assert "Midpoint:" in runner.invoke(app, ["--config", str(config)]).output
+    hidden = runner.invoke(app, ["--config", str(config), "--hide-cost-range"])
+    assert hidden.exit_code == 0 and "Midpoint:" not in hidden.output
+
+
+def test_endpoint_json_and_dashboard_integration(settings_factory, monkeypatch) -> None:
+    from codex_usage.config import load_settings
+    from codex_usage.endpoint import EndpointState, parse_cost
+    _, config = settings_factory()
+    config.write_text(config.read_text() + '''
+[cost_endpoint]
+enabled = true
+url = "https://example.com/costs"
+api_key_env = "TEST_COST_KEY"
+currency_override = "USD"
+''')
+    cost = parse_cost({"usage": "480.0128", "limit": "500", "currency": "GBP",
+                       "asOf": "2026-11-22T00:00:00Z"}, load_settings(config).cost_endpoint)
+    calls = []
+
+    def fetch(settings):
+        calls.append(settings)
+        return EndpointState(cost=cost)
+
+    monkeypatch.setattr("codex_usage.cli.endpoint_state", fetch)
+    for args in (["--json"], ["report", "--json"]):
+        result = runner.invoke(app, ["--config", str(config), *args])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        row = payload.get("month", payload)
+        assert row["cost_endpoint"]["data"]["usage_usd"] == "480.0128"
+        assert row["cost_endpoint"]["data"]["currency"] == "USD"
+        assert row["cost_usd"] == "0"
+    normal = runner.invoke(app, ["--config", str(config)])
+    assert normal.exit_code == 0, normal.output
+    assert "Provider reported usage" in normal.output and "$480.01" in normal.output
+    assert "As of:" in normal.output
+    count = len(calls)
+    for args in (["report", "--period", "all", "--json"], ["report", "--model", "model-a", "--json"]):
+        result = runner.invoke(app, ["--config", str(config), *args])
+        assert result.exit_code == 0, result.output
+        assert "cost_endpoint" not in json.loads(result.output)
+    assert len(calls) == count
+
+
+def test_watch_refreshes_endpoint_and_local_costs_independently(settings_factory, monkeypatch) -> None:
+    from codex_usage.endpoint import EndpointState
+    _, config = settings_factory()
+    snapshots = []
+    polls = []
+
+    class Poller:
+        def __init__(self, settings):
+            pass
+
+        def snapshot(self):
+            polls.append(True)
+            return EndpointState(error="Provider temporarily unavailable")
+
+    class FakeLive:
+        def __init__(self, renderable, **kwargs):
+            snapshots.append(renderable)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def update(self, renderable, **kwargs):
+            snapshots.append(renderable)
+
+    def sleep(_):
+        if len(snapshots) >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("codex_usage.cli.EndpointPoller", Poller)
+    monkeypatch.setattr("codex_usage.cli.Live", FakeLive)
+    monkeypatch.setattr("codex_usage.cli.time.sleep", sleep)
+    result = runner.invoke(app, ["--config", str(config), "watch"])
+    assert result.exit_code == 0, result.output
+    assert len(polls) == len(snapshots) == 2
+    for snapshot in snapshots:
+        stream = StringIO()
+        Console(file=stream, width=110).print(snapshot)
+        assert "Main estimate" in stream.getvalue()
+        assert "Provider temporarily unavailable" in stream.getvalue()

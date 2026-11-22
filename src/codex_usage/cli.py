@@ -13,8 +13,9 @@ from rich.table import Table
 
 from .analytics import Period, UsageReport, build_report
 from .config import ConfigError, Settings, load_settings
+from .endpoint import EndpointPoller, EndpointState, endpoint_state
 from .parser import SessionScanner
-from .render import dashboard_renderable, report_renderable
+from .render import ACCENT_PURPLE, dashboard_renderable, report_renderable
 
 
 app = typer.Typer(
@@ -26,7 +27,7 @@ app = typer.Typer(
 console = Console()
 
 
-def _settings(path: Path) -> Settings:
+def _settings(path: Path | None) -> Settings:
     try:
         return load_settings(path)
     except ConfigError as exc:
@@ -38,8 +39,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _report_dict(report: UsageReport) -> dict[str, Any]:
-    return {
+def _report_dict(report: UsageReport, endpoint: EndpointState | None = None) -> dict[str, Any]:
+    result = {
         "period": report.period.value,
         "start": report.start.isoformat() if report.start else None,
         "end": report.end.isoformat(),
@@ -85,27 +86,33 @@ def _report_dict(report: UsageReport) -> dict[str, Any]:
             "parse_issue_count": report.parse_issue_count,
         },
     }
+    if endpoint is not None:
+        result["cost_endpoint"] = endpoint.to_dict()
+    return result
 
 
 def _dashboard(
-    settings: Settings, json_output: bool = False, *, show_parser_warnings: bool = False
+    settings: Settings, json_output: bool = False, *, show_parser_warnings: bool = False,
+    show_cost_range: bool = False,
 ) -> None:
     scan = SessionScanner(settings).scan()
     now = _now()
     month = build_report(scan, settings, Period.month, now)
+    endpoint = endpoint_state(settings.cost_endpoint)
     if json_output:
-        console.print_json(json.dumps({"month": _report_dict(month)}))
+        console.print_json(json.dumps({"month": _report_dict(month, endpoint)}))
     else:
-        console.print(dashboard_renderable(month, scan, show_parser_warnings=show_parser_warnings))
+        console.print(dashboard_renderable(month, scan, show_parser_warnings=show_parser_warnings,
+                                           show_cost_range=show_cost_range, endpoint=endpoint))
 
 
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
     config: Annotated[
-        Path,
-        typer.Option("--config", "-c", help="Path to the editable pricing TOML file."),
-    ] = Path("pricing.toml"),
+        Path | None,
+        typer.Option("--config", "-c", help="Pricing TOML; defaults to the user configuration, then ./pricing.toml."),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Emit machine-readable JSON for the default dashboard."),
@@ -114,13 +121,19 @@ def main(
         bool,
         typer.Option("--show-parser-warnings", help="Show parser/deduplication warnings in normal output."),
     ] = False,
+    show_cost_range: Annotated[
+        bool | None,
+        typer.Option("--show-cost-range/--hide-cost-range", help="Show the optional 12h upper bound and midpoint."),
+    ] = None,
 ) -> None:
-    """Show current-month default, upper-bound and mean cost estimates."""
+    """Show the current month's local cost estimate and optional provider usage."""
     settings = _settings(config)
     ctx.obj = settings
     ctx.meta["show_parser_warnings"] = show_parser_warnings
+    ctx.meta["show_cost_range"] = settings.show_cost_range if show_cost_range is None else show_cost_range
     if ctx.invoked_subcommand is None:
-        _dashboard(settings, json_output, show_parser_warnings=show_parser_warnings)
+        _dashboard(settings, json_output, show_parser_warnings=show_parser_warnings,
+                   show_cost_range=ctx.meta["show_cost_range"])
 
 
 @app.command()
@@ -134,11 +147,13 @@ def report(
     settings: Settings = ctx.obj
     scan = SessionScanner(settings).scan()
     result = build_report(scan, settings, period, _now(), model=model)
+    endpoint = endpoint_state(settings.cost_endpoint) if period == Period.month and model is None else None
     if json_output:
-        console.print_json(json.dumps(_report_dict(result)))
+        console.print_json(json.dumps(_report_dict(result, endpoint)))
     else:
         console.print(
-            report_renderable(result, scan, show_parser_warnings=ctx.meta["show_parser_warnings"])
+            report_renderable(result, scan, show_parser_warnings=ctx.meta["show_parser_warnings"],
+                              show_cost_range=ctx.meta["show_cost_range"], endpoint=endpoint)
         )
 
 
@@ -154,6 +169,7 @@ def watch(
     settings: Settings = ctx.obj
     refresh_interval = interval or settings.watch_interval_seconds
     scanner = SessionScanner(settings)
+    poller = EndpointPoller(settings.cost_endpoint)
     try:
         scan = scanner.scan()
         now = _now()
@@ -161,6 +177,7 @@ def watch(
             build_report(scan, settings, Period.month, now),
             scan,
             show_parser_warnings=ctx.meta["show_parser_warnings"],
+            show_cost_range=ctx.meta["show_cost_range"], endpoint=poller.snapshot(),
         )
         with Live(renderable, console=console, refresh_per_second=4, screen=False) as live:
             while True:
@@ -172,6 +189,7 @@ def watch(
                         build_report(scan, settings, Period.month, now),
                         scan,
                         show_parser_warnings=ctx.meta["show_parser_warnings"],
+                        show_cost_range=ctx.meta["show_cost_range"], endpoint=poller.snapshot(),
                     ),
                     refresh=True,
                 )
@@ -185,7 +203,7 @@ def models_command(ctx: typer.Context) -> None:
     settings: Settings = ctx.obj
     scan = SessionScanner(settings).scan()
     report_all = build_report(scan, settings, Period.all, _now())
-    table = Table(title="Observed and configured models", header_style="bold magenta")
+    table = Table(title="Observed and configured models", header_style=f"bold {ACCENT_PURPLE}")
     table.add_column("Observed model")
     table.add_column("Pricing model")
     table.add_column("Prompts", justify="right")
@@ -211,6 +229,15 @@ def doctor(ctx: typer.Context) -> None:
     checks.add_column("Status")
     checks.add_column("Details")
     checks.add_row("Configuration", "[green]OK[/]", str(settings.config_path))
+    endpoint = endpoint_state(settings.cost_endpoint)
+    if endpoint is None:
+        checks.add_row("Cost endpoint", "[dim]DISABLED[/]", "Local estimates only")
+    elif endpoint.error:
+        checks.add_row("Cost endpoint", "[yellow]WARNING[/]", endpoint.error)
+    else:
+        as_of = (endpoint.cost.as_of.astimezone(settings.timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
+                 if endpoint.cost.as_of else "not supplied")
+        checks.add_row("Cost endpoint", "[green]OK[/]", f"Reported usage in USD; as of {as_of}")
     missing_paths = 0
     for path in settings.source_paths:
         exists = path.is_dir()

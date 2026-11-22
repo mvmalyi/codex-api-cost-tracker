@@ -1,10 +1,11 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from codex_usage.analytics import request_cost
-from codex_usage.config import ConfigError, load_settings
+from codex_usage.config import ConfigError, default_config_path, load_settings
 from codex_usage.domain import TokenUsage
 
 
@@ -74,3 +75,95 @@ def test_sol_cached_input_prices_are_corrected() -> None:
     price = load_settings(Path(__file__).parents[1] / "pricing.toml").models["gpt-6.1-sol"]
     assert price.short.cached_input == Decimal(".10")
     assert price.long.cached_input == Decimal(".20")
+
+
+def test_optional_features_default_to_disabled(settings_factory) -> None:
+    settings, _ = settings_factory()
+    assert not settings.cost_endpoint.enabled
+    assert not settings.show_cost_range
+    shipped = load_settings(Path(__file__).parents[1] / "pricing.toml")
+    assert not shipped.cost_endpoint.enabled
+    assert not shipped.show_cost_range
+
+
+@pytest.mark.parametrize("setting", ['', 'timezone = "local"\n'])
+def test_local_timezone_uses_system_zone_rules_not_a_fixed_offset(settings_factory, monkeypatch, setting) -> None:
+    _, config = settings_factory()
+    config.write_text(config.read_text().replace('timezone = "Europe/London"\n', setting))
+    monkeypatch.setenv("TZ", "America/New_York")
+    zone = load_settings(config).timezone
+    winter = datetime(2026, 1, 15, 12, tzinfo=timezone.utc).astimezone(zone)
+    summer = datetime(2026, 7, 15, 12, tzinfo=timezone.utc).astimezone(zone)
+    assert (winter.hour, winter.tzname()) == (7, "EST")
+    assert (summer.hour, summer.tzname()) == (8, "EDT")
+
+
+def test_explicit_timezone_overrides_system_timezone(settings_factory, monkeypatch) -> None:
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    settings, _ = settings_factory()
+    assert str(settings.timezone) == "Europe/London"
+
+
+@pytest.mark.parametrize("value", ['"Unknown/Nowhere"', '""', '"/Europe/London"', '123'])
+def test_invalid_timezone_is_a_configuration_error(settings_factory, value) -> None:
+    _, config = settings_factory()
+    config.write_text(config.read_text().replace('timezone = "Europe/London"', f'timezone = {value}'))
+    with pytest.raises(ConfigError, match="Unknown timezone"):
+        load_settings(config)
+
+
+def test_personal_config_is_preferred_and_explicit_config_wins(settings_factory, tmp_path, monkeypatch) -> None:
+    _, config = settings_factory()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.chdir(tmp_path)
+    assert default_config_path() == Path("pricing.toml")
+    personal = tmp_path / "config" / "codex-usage" / "pricing.toml"
+    personal.parent.mkdir(parents=True)
+    personal.write_text(config.read_text().replace('monthly_budget_usd = "500"', 'monthly_budget_usd = "600"'))
+    assert default_config_path() == personal
+    assert load_settings().monthly_budget_usd == Decimal("600")
+    assert load_settings(config).monthly_budget_usd == Decimal("500")
+
+
+@pytest.mark.parametrize("setting", [
+    'enabled = "yes"',
+    'enabled = true\nurl = "http://example.com/costs"\napi_key_env = "TEST_KEY"',
+    'enabled = true\nurl = "https://user:pass@example.com/costs"\napi_key_env = "TEST_KEY"',
+    'enabled = true\nurl = "https://example.com/costs#fragment"\napi_key_env = "TEST_KEY"',
+    'enabled = true\nurl = "https://example.com/costs"\napi_key_env = ""',
+    'enabled = true\nurl = "https://example.com/costs"\napi_key_env = "TEST_KEY"\nusage_field = ""',
+    'currency_override = "GBP"',
+    'timeout_seconds = 0',
+    'timeout_seconds = nan',
+    'refresh_interval_seconds = -1',
+    'refresh_interval_seconds = inf',
+    'params = { account = 42 }',
+])
+def test_invalid_endpoint_settings_are_rejected(settings_factory, setting) -> None:
+    _, config = settings_factory()
+    config.write_text(config.read_text() + "\n[cost_endpoint]\n" + setting)
+    with pytest.raises(ConfigError, match="cost_endpoint"):
+        load_settings(config)
+
+
+def test_configurable_endpoint_fields_and_parameters(settings_factory) -> None:
+    _, config = settings_factory()
+    config.write_text(config.read_text() + '''
+[cost_endpoint]
+enabled = true
+url = "https://example.com/costs"
+api_key_env = "TEST_KEY"
+usage_field = "data.spent"
+limit_field = "quota.total"
+as_of_field = "updated"
+currency_override = "USD"
+timeout_seconds = 10
+refresh_interval_seconds = 120
+[cost_endpoint.params]
+account = "research"
+''')
+    endpoint = load_settings(config).cost_endpoint
+    assert endpoint.enabled
+    assert endpoint.usage_field == "data.spent"
+    assert endpoint.params == (("account", "research"),)
+    assert endpoint.refresh_interval_seconds == 120

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from decimal import Decimal
 from enum import Enum
 from typing import Iterable
@@ -74,6 +74,7 @@ class UsageReport:
     duplicate_files: int
     plain_files: int = 0
     compressed_files: int = 0
+    display_timezone: tzinfo = timezone.utc
 
     @property
     def partial_cost(self) -> bool:
@@ -211,4 +212,5 @@ def build_report(
         duplicate_files=scan.duplicate_files,
         plain_files=scan.plain_files,
         compressed_files=scan.compressed_files,
+        display_timezone=settings.timezone,
     )

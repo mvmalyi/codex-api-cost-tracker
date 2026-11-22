@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone as utc_timezone, tzinfo
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import math
+import os
 import tomllib
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -28,8 +32,23 @@ class ModelPrice:
 
 
 @dataclass(frozen=True)
+class CostEndpointSettings:
+    enabled: bool = False
+    url: str = ""
+    api_key_env: str = ""
+    usage_field: str = "usage"
+    limit_field: str = "limit"
+    as_of_field: str = "asOf"
+    currency_field: str = "currency"
+    currency_override: str = ""
+    timeout_seconds: float = 30
+    refresh_interval_seconds: float = 60
+    params: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class Settings:
-    timezone: ZoneInfo
+    timezone: tzinfo
     monthly_budget_usd: Decimal
     watch_interval_seconds: float
     active_sessions_path: Path
@@ -37,6 +56,8 @@ class Settings:
     models: dict[str, ModelPrice]
     aliases: dict[str, str]
     config_path: Path
+    show_cost_range: bool = False
+    cost_endpoint: CostEndpointSettings = CostEndpointSettings()
 
     @property
     def source_paths(self) -> tuple[Path, Path]:
@@ -80,7 +101,99 @@ def _band(data: object, field: str) -> PriceBand:
     return band
 
 
-def load_settings(path: Path | str = Path("pricing.toml")) -> Settings:
+def default_config_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser()
+    personal = config_home / "codex-usage" / "pricing.toml"
+    return personal if personal.is_file() else Path("pricing.toml")
+
+
+def _local_timezone() -> tzinfo:
+    name = os.environ.get("TZ", "").removeprefix(":")
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    # Reading the system zone retains historical and daylight-saving rules,
+    # unlike datetime.astimezone().tzinfo, which is only the current UTC offset.
+    try:
+        with Path("/etc/localtime").open("rb") as handle:
+            return ZoneInfo.from_file(handle)
+    except (OSError, ValueError):
+        return datetime.now().astimezone().tzinfo or utc_timezone.utc
+
+
+def _timezone(value: object) -> tzinfo:
+    if value == "local":
+        return _local_timezone()
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        return ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ConfigError(f"Unknown timezone: {value}; use local or an IANA name such as Europe/London") from exc
+
+
+def _boolean(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{field} must be true or false")
+    return value
+
+
+def _positive_seconds(value: object, field: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConfigError(f"{field} must be a positive number") from exc
+    if isinstance(value, bool) or not math.isfinite(result) or result <= 0:
+        raise ConfigError(f"{field} must be a finite positive number")
+    return result
+
+
+def _cost_endpoint(data: object) -> CostEndpointSettings:
+    if not isinstance(data, dict):
+        raise ConfigError("[cost_endpoint] must be a TOML table")
+    enabled = _boolean(data.get("enabled", False), "cost_endpoint.enabled")
+    strings = {}
+    for name in ("url", "api_key_env", "usage_field", "limit_field", "as_of_field",
+                 "currency_field", "currency_override"):
+        default = getattr(CostEndpointSettings(), name)
+        value = data.get(name, default)
+        if not isinstance(value, str):
+            raise ConfigError(f"cost_endpoint.{name} must be a string")
+        strings[name] = value.strip()
+    if enabled:
+        try:
+            url = urlsplit(strings["url"])
+            valid_url = (url.scheme == "https" and bool(url.hostname)
+                         and not url.username and not url.password and not url.fragment)
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ConfigError("cost_endpoint.url must be an HTTPS URL without credentials or a fragment")
+        if not strings["api_key_env"].isidentifier():
+            raise ConfigError("cost_endpoint.api_key_env must name an environment variable")
+        if not strings["usage_field"]:
+            raise ConfigError("cost_endpoint.usage_field cannot be empty")
+    if strings["currency_override"] not in ("", "USD"):
+        raise ConfigError("cost_endpoint.currency_override must be USD; currency conversion is not supported")
+    params = data.get("params", {})
+    if not isinstance(params, dict) or any(not isinstance(value, str) for value in params.values()):
+        raise ConfigError("cost_endpoint.params must be a table of string query parameters")
+    return CostEndpointSettings(
+        enabled=enabled,
+        **strings,
+        timeout_seconds=_positive_seconds(data.get("timeout_seconds", 30), "cost_endpoint.timeout_seconds"),
+        refresh_interval_seconds=_positive_seconds(
+            data.get("refresh_interval_seconds", 60), "cost_endpoint.refresh_interval_seconds"
+        ),
+        params=tuple(params.items()),
+    )
+
+
+def load_settings(path: Path | str | None = None) -> Settings:
+    if path is None:
+        path = default_config_path()
     config_path = Path(path).expanduser().resolve()
     try:
         with config_path.open("rb") as handle:
@@ -93,10 +206,7 @@ def load_settings(path: Path | str = Path("pricing.toml")) -> Settings:
     app = raw.get("app")
     if not isinstance(app, dict):
         raise ConfigError("Missing [app] configuration table")
-    try:
-        timezone = ZoneInfo(str(app.get("timezone", "Europe/London")))
-    except ZoneInfoNotFoundError as exc:
-        raise ConfigError(f"Unknown timezone: {app.get('timezone')}") from exc
+    timezone = _timezone(app.get("timezone", "local"))
 
     models: dict[str, ModelPrice] = {}
     model_tables = raw.get("models", {})
@@ -142,5 +252,7 @@ def load_settings(path: Path | str = Path("pricing.toml")) -> Settings:
         models=models,
         aliases=aliases,
         config_path=config_path,
+        show_cost_range=_boolean(app.get("show_cost_range", False), "app.show_cost_range"),
+        cost_endpoint=_cost_endpoint(raw.get("cost_endpoint", {})),
     )
 
