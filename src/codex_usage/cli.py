@@ -235,9 +235,7 @@ def doctor(ctx: typer.Context) -> None:
     elif endpoint.error:
         checks.add_row("Cost endpoint", "[yellow]WARNING[/]", endpoint.error)
     else:
-        as_of = (endpoint.cost.as_of.astimezone(settings.timezone).strftime("%Y-%m-%d %H:%M:%S %Z")
-                 if endpoint.cost.as_of else "not supplied")
-        checks.add_row("Cost endpoint", "[green]OK[/]", f"Reported usage in USD; as of {as_of}")
+        checks.add_row("Cost endpoint", "[green]OK[/]", "Provider reported usage in USD")
     missing_paths = 0
     for path in settings.source_paths:
         exists = path.is_dir()

@@ -221,7 +221,7 @@ def test_watch_renders_and_refreshes_scenarios_with_warning_preference(settings_
             stream = StringIO()
             Console(file=stream, width=160).print(snapshot)
             rendered = stream.getvalue()
-            assert "Main estimate — 30m writes" in rendered
+            assert "Estimate from logs" in rendered
             assert "Upper bound" not in rendered
             assert "Midpoint:" not in rendered
             assert "Activity" not in rendered
@@ -271,7 +271,7 @@ currency_override = "USD"
     normal = runner.invoke(app, ["--config", str(config)])
     assert normal.exit_code == 0, normal.output
     assert "Provider reported usage" in normal.output and "$480.01" in normal.output
-    assert "As of:" in normal.output
+    assert "As of" not in normal.output
     count = len(calls)
     for args in (["report", "--period", "all", "--json"], ["report", "--model", "model-a", "--json"]):
         result = runner.invoke(app, ["--config", str(config), *args])
@@ -320,5 +320,5 @@ def test_watch_refreshes_endpoint_and_local_costs_independently(settings_factory
     for snapshot in snapshots:
         stream = StringIO()
         Console(file=stream, width=110).print(snapshot)
-        assert "Main estimate" in stream.getvalue()
+        assert "Estimate from logs" in stream.getvalue()
         assert "Provider temporarily unavailable" in stream.getvalue()

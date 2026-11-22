@@ -19,7 +19,7 @@ codex-usage
 
 `uv tool install` keeps the installed CLI independent of the project folder. Re-run `uv tool install --force .` after changing the source code.
 
-The default dashboard shows the current calendar month's main estimate against
+The default dashboard shows the current calendar month's estimate from logs against
 `monthly_budget_usd`, with cache writes priced at the 30-minute rate. The Models
 table shows the same local estimate per model. The optional 12-hour upper bound
 and arithmetic midpoint are hidden by default; enable them with
@@ -33,8 +33,8 @@ Configuration is read from `$XDG_CONFIG_HOME/codex-usage/pricing.toml`
 For terminal use from any directory, copy the supplied `pricing.toml` to that
 personal configuration path before customising it.
 
-Both **As of** and **Updated** use `app.timezone`, including daylight-saving
-changes at each timestamp. It defaults to `"local"`, which detects the machine's
+**Updated** uses `app.timezone`, including daylight-saving changes. It defaults
+to `"local"`, which detects the machine's
 timezone when the command starts (honouring an IANA `TZ` environment variable).
 Set an IANA name such as `"Europe/London"` to fix the reporting timezone. This
 also determines calendar-month boundaries. London shows GMT in winter and BST
@@ -96,21 +96,21 @@ Amounts must be non-negative and in USD. If a provider incorrectly labels its
 USD figures as another currency, set `currency_override = "USD"` in
 `[cost_endpoint]`. This changes the label only and performs no conversion.
 Missing currency is treated as USD; any other currency is rejected unless
-overridden. Missing `limit` uses `app.monthly_budget_usd`. Missing `asOf` is
-shown as “not supplied”; when present it must include a timezone. Set a metadata
-field name to an empty string to ignore that response field.
+overridden. Missing `limit` uses `app.monthly_budget_usd`. Optional `asOf`
+metadata is retained in JSON, with its meaning defined by the provider; when
+present it must include a timezone. Set a metadata field name to an empty string
+to ignore that response field.
 
-When enabled, the dashboard shows two budget bars: the current local estimate
-on the left and provider-reported usage on the right. Panels stack only when
-their amounts and timestamp cannot fit side by side. Each uses its own budget
-or limit. The provider's **As of** timestamp is displayed because it may lag
-behind local activity. Its usage and quota period come directly from the
+When enabled, the dashboard shows two budget bars: **Estimate from logs**
+on the left and **Provider reported usage** on the right. Panels stack only when
+their amounts cannot fit side by side. Each uses its own budget or limit.
+The provider's usage and quota period come directly from the
 provider; they are not reconciled with or added to the local calendar-month
 estimate. There is no per-model provider breakdown.
 
 Watch mode refreshes the endpoint in the background at the configured interval,
 independently of local log updates. On failure it retains the last successful
-response and timestamp with a warning. A missing key or failed request leaves
+response with a warning. A missing key or failed request leaves
 the local estimate available. One-off commands use the configured request timeout.
 `doctor` checks the endpoint when enabled. All-time and model-filtered reports
 show only local costs, since the endpoint describes account-wide usage.

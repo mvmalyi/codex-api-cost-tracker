@@ -86,7 +86,7 @@ def budget_panel(report: UsageReport, *, show_cost_range: bool = False) -> Panel
     if report.partial_cost:
         pieces.append(Text("Partial estimate", style="bold yellow"))
     return Panel(
-        Group(*pieces), title="Main estimate — 30m writes", border_style=style, padding=(1, 2)
+        Group(*pieces), title="Estimate from logs", border_style=style, padding=(1, 2)
     )
 
 
@@ -94,7 +94,6 @@ def endpoint_panel(state: EndpointState, report: UsageReport) -> Panel:
     pieces: list[RenderableType] = []
     style = ACCENT_PURPLE
     cost = state.cost
-    subtitle = None
     if cost is not None:
         text = Text.assemble((format_money(cost.usage_usd), f"bold {style}"))
         pieces.append(text)
@@ -106,16 +105,13 @@ def endpoint_panel(state: EndpointState, report: UsageReport) -> Panel:
                 _BudgetProgressBar(ratio),
                 Text(f"Remaining: {format_money(max(Decimal('0'), limit - cost.usage_usd))}"),
             ])
-        as_of = cost.as_of.astimezone(report.display_timezone) if cost.as_of else None
-        stamp = as_of.strftime('%Y-%m-%d %H:%M %Z') if as_of else "not supplied"
-        subtitle = Text(f"As of: {stamp}", style="default")
     elif state.refreshing:
         pieces.append(Text("Fetching reported usage…", style="dim"))
     if state.error:
         if cost:
             pieces.append(Text("Last successful response; refresh failed.", style="yellow"))
         pieces.append(Text(state.error, style="yellow"))
-    return Panel(Group(*pieces), title="Provider reported usage", subtitle=subtitle,
+    return Panel(Group(*pieces), title="Provider reported usage",
                  border_style=style, padding=(1, 2))
 
 
@@ -128,8 +124,8 @@ class _BudgetPanels:
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         local = budget_panel(self.report, show_cost_range=self.show_cost_range)
         remote = endpoint_panel(self.endpoint, self.report)
-        # Keep the amount, limit and percentage intact in each half. The timestamp
-        # also needs room; narrower terminals stack the panels without clipping.
+        # Keep the amount, limit and percentage intact in each half; narrower
+        # terminals stack the panels without clipping.
         def amount_width(usage: Decimal, limit: Decimal | None) -> int:
             label = format_money(usage)
             if limit is not None:
@@ -137,13 +133,13 @@ class _BudgetPanels:
                 label += f" / {format_money(limit)}  ({ratio:.1%})"
             return len(label) + 6
 
-        local_width = max(len("Main estimate — 30m writes") + 4,
+        local_width = max(len("Estimate from logs") + 4,
                           amount_width(self.report.cost_usd, self.report.budget_usd))
         remote_width = len("Provider reported usage") + 4
         if self.endpoint.cost:
             cost = self.endpoint.cost
             limit = cost.limit_usd if cost.limit_usd is not None else self.report.budget_usd
-            remote_width = max(remote_width, amount_width(cost.usage_usd, limit), remote.subtitle.cell_len + 4)
+            remote_width = max(remote_width, amount_width(cost.usage_usd, limit))
         if options.max_width < local_width + remote_width + 2:
             yield Group(local, remote)
         else:

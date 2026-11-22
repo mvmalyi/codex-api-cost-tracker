@@ -99,7 +99,7 @@ def test_dashboard_layout_is_readable_at_different_widths(width, state) -> None:
     stream = StringIO()
     Console(file=stream, width=width).print(dashboard_renderable(report, scan))
     text = stream.getvalue()
-    assert "Main estimate — 30m writes" in text
+    assert "Estimate from logs" in text
     assert "Upper bound" not in text
     assert "Midpoint:" not in text
     assert "Codex Usage Tracker" not in text
@@ -109,7 +109,7 @@ def test_dashboard_layout_is_readable_at_different_widths(width, state) -> None:
     assert "Trailing" not in text
     assert "parser/deduplication" not in text
     assert all(len(line) <= width for line in text.splitlines())
-    assert text.count("Main estimate —") == 1
+    assert text.count("Estimate from logs") == 1
     assert sum("░" in line or "█" in line for line in text.splitlines()) == 1
     if state == "partial":
         assert text.count("Partial estimate") == 1
@@ -219,7 +219,7 @@ def test_provider_panels_fit_and_only_stack_when_content_requires_it(width) -> N
     assert all(len(line) <= width for line in lines)
     assert "$1.23 / $500.00  (0.2%)" in text
     assert "$480.01 / $500.00  (96.0%)" in text
-    assert "As of: 2026-07-28 00:00 UTC" in text
+    assert "As of" not in text
     assert "Remaining: $19.99" in text
     assert "Upper bound" not in text and "Midpoint" not in text
 
@@ -245,7 +245,7 @@ def test_endpoint_failure_keeps_local_estimate_visible(cached) -> None:
         report_fixture(), ScanResult([], [], 0, 0), endpoint=state,
     ))
     text = stream.getvalue()
-    assert "Main estimate" in text and "$1.23" in text
+    assert "Estimate from logs" in text and "$1.23" in text
     assert "Could not reach endpoint." in text
     assert ("Last successful response" in text) is cached
     assert ("$480.01" in text) is cached
@@ -264,20 +264,20 @@ def test_provider_limit_is_independent_and_missing_limit_uses_local_budget() -> 
         assert expected in stream.getvalue()
 
 
-@pytest.mark.parametrize("zone,as_of,now,expected_as_of,expected_updated", [
+@pytest.mark.parametrize("zone,as_of,now,expected_updated", [
     ("Europe/London", "2026-11-22T00:00:00Z", "2026-11-22T12:00:00Z",
-     "2026-11-22 00:00 GMT", "2026-11-22 12:00:00 GMT"),
+     "2026-11-22 12:00:00 GMT"),
     ("Europe/London", "2026-07-28T00:00:00Z", "2026-07-29T12:00:00Z",
-     "2026-07-28 01:00 BST", "2026-07-29 13:00:00 BST"),
+     "2026-07-29 13:00:00 BST"),
     ("Europe/London", "2026-03-29T00:30:00Z", "2026-03-29T01:30:00Z",
-     "2026-03-29 00:30 GMT", "2026-03-29 02:30:00 BST"),
+     "2026-03-29 02:30:00 BST"),
     ("America/New_York", "2026-11-22T00:00:00Z", "2026-11-22T12:00:00Z",
-     "2026-11-21 19:00 EST", "2026-11-22 07:00:00 EST"),
+     "2026-11-22 07:00:00 EST"),
     ("Asia/Kolkata", "2026-11-22T00:00:00Z", "2026-11-22T12:00:00Z",
-     "2026-11-22 05:30 IST", "2026-11-22 17:30:00 IST"),
+     "2026-11-22 17:30:00 IST"),
 ])
-def test_both_timestamps_use_reporting_timezone_and_json_preserves_offsets(
-    settings_factory, zone, as_of, now, expected_as_of, expected_updated,
+def test_provider_timestamp_is_hidden_and_local_updated_preserves_json_offsets(
+    settings_factory, zone, as_of, now, expected_updated,
 ) -> None:
     settings, _ = settings_factory()
     settings = replace(settings, timezone=ZoneInfo(zone))
@@ -290,7 +290,7 @@ def test_both_timestamps_use_reporting_timezone_and_json_preserves_offsets(
         stream = StringIO()
         Console(file=stream, width=110).print(dashboard_renderable(report, scan, endpoint=endpoint))
         text = stream.getvalue()
-        assert f"As of: {expected_as_of}" in text
+        assert "As of" not in text
         assert f"Updated {expected_updated}" in text
         payload = _report_dict(report, endpoint)
         assert payload["end"] == now.isoformat()
